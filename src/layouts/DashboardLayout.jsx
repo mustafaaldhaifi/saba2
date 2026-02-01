@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { logoutUser } from '../features/auth/authService';
-import { auth } from '../config/firebase';
+import { auth, db } from '../config/firebase'; // Added db import
 import { onAuthStateChanged } from 'firebase/auth';
+import { collection, query, where, getDocs, doc, getDoc } from "firebase/firestore"; // Added firestore imports
 
 const DashboardLayout = ({ children, title, role }) => {
     const navigate = useNavigate();
@@ -10,9 +11,10 @@ const DashboardLayout = ({ children, title, role }) => {
     const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Mobile state
     const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false); // Desktop state
     const [userName, setUserName] = useState('');
+    const [userCity, setUserCity] = useState(''); // New state for city
 
     useEffect(() => {
-        const unsubscribe = onAuthStateChanged(auth, (user) => {
+        const unsubscribe = onAuthStateChanged(auth, async (user) => { // Made async
             if (user) {
                 // Extract name from "name@saba321.com"
                 const email = user.email;
@@ -21,13 +23,41 @@ const DashboardLayout = ({ children, title, role }) => {
                     // Determine display name
                     if (namePart === 'admin') {
                         setUserName('Admin');
+                        setUserCity('');
                     } else {
                         setUserName(namePart);
+
+                        // 1. Try Local Storage Cache First
+                        const cachedBranch = localStorage.getItem('currentBranch');
+                        let cityFound = false;
+
+                        if (cachedBranch) {
+                            try {
+                                const parsedBranch = JSON.parse(cachedBranch);
+                                // Verify it matches current user to avoid stale data
+                                if (parsedBranch.name === namePart || parsedBranch.id === namePart) {
+                                    console.log("Using cached branch data:", parsedBranch);
+                                    setUserCity(parsedBranch.city || '');
+                                    cityFound = true;
+                                }
+                            } catch (e) {
+                                console.error("Error parsing cached branch:", e);
+                            }
+                        }
+
+                        // 2. Fallback to Firestore if not found in cache
+                        if (!cityFound) {
+                            console.warn("City not found in cache. Accessing as 'other' default.");
+                            // Strictly NO server fetch as requested.
+                            setUserCity('');
+                        }
                     }
                 }
             } else {
                 // Not logged in
                 setUserName('');
+                setUserCity('');
+                localStorage.removeItem('currentBranch'); // Clear cache on logout/no user
             }
         });
 
@@ -183,11 +213,18 @@ const DashboardLayout = ({ children, title, role }) => {
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                         {/* Use Name Display */}
-                        {userName && (
-                            <span style={{ fontWeight: '600', color: 'hsl(var(--color-primary))', fontSize: '0.95rem' }}>
-                                {userName}
-                            </span>
-                        )}
+                        <div style={{ textAlign: 'right' }}>
+                            {userName && (
+                                <div style={{ fontWeight: '600', color: 'hsl(var(--color-primary))', fontSize: '0.95rem' }}>
+                                    {userName}
+                                </div>
+                            )}
+                            {userCity && (
+                                <div style={{ fontSize: '0.8rem', color: 'hsl(var(--color-text-muted))' }}>
+                                    {userCity}
+                                </div>
+                            )}
+                        </div>
 
                         <div style={{
                             width: '40px',

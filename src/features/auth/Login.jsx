@@ -19,7 +19,8 @@ const Login = () => {
                 const querySnapshot = await getDocs(collection(db, "branches"));
                 const branchList = querySnapshot.docs.map(doc => ({
                     id: doc.id,
-                    name: doc.data().name || doc.id, // Ensure we have a name
+                    ...doc.data(), // Include all fields (city, etc.)
+                    name: doc.data().name || doc.id, // Ensure name is set
                     displayName: doc.data().name || doc.id
                 }));
 
@@ -58,6 +59,16 @@ const Login = () => {
 
         try {
             await signInWithEmailAndPassword(auth, email, password);
+
+            // Find full branch details to save to local storage
+            // This avoids re-fetching in the dashboard
+            const branchDetails = branches.find(b => b.name === selectedBranch);
+            if (branchDetails) {
+                // If it's admin, city might not be relevant but we can save it.
+                // If it's a branch, 'city' should be in branchDetails (we need to ensure fetchBranches gets it)
+                localStorage.setItem('currentBranch', JSON.stringify(branchDetails));
+            }
+
             // Logic to determine if Admin or Branch
             if (email.includes('admin')) {
                 navigate('/admin');

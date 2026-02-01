@@ -45,6 +45,7 @@ body {
   color: hsl(var(--color-text-main));
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  direction: rtl; 
 }
 
 /* Utility classes for layout */
