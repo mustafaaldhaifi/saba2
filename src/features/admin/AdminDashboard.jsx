@@ -22,8 +22,18 @@ const AdminDashboard = () => {
         unitF: '',
         parentProduct: '',
         sortOrder: 0,
+        isSales: false,
+        deductFromProduct: '',
+        deductAmount: 1,
         targetBranch: 'current' // 'current' or 'both'
     });
+
+    // ... (unchanged code)
+
+    // Handlers
+    // Handlers
+    // handleOpenModal moved below
+
 
     // UI States
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -111,6 +121,8 @@ const AdminDashboard = () => {
                 unitF: product.unitF || '',
                 parentProduct: product.parentProduct || '',
                 sortOrder: product.sortOrder || 0,
+                isSales: product.isSales || false,
+                deductFromProduct: product.deductFromProduct || '',
                 targetBranch: 'current'
             });
         } else {
@@ -121,6 +133,8 @@ const AdminDashboard = () => {
                 unitF: '',
                 parentProduct: '',
                 sortOrder: 0,
+                isSales: false,
+                deductFromProduct: '',
                 targetBranch: 'current'
             });
         }
@@ -178,6 +192,9 @@ const AdminDashboard = () => {
                 typeId: selectedOrderType,
                 parentProduct: formData.parentProduct || null,
                 sortOrder: Number(formData.sortOrder) || 0,
+                isSales: formData.isSales || false,
+                deductFromProduct: formData.deductFromProduct || null,
+                deductAmount: formData.deductFromProduct ? (Number(formData.deductAmount) || 1) : 1,
                 updatedAt: serverTimestamp()
             };
 
@@ -385,116 +402,211 @@ const AdminDashboard = () => {
             {isModalOpen && (
                 <div style={{
                     position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-                    backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex',
-                    alignItems: 'center', justifyContent: 'center', zIndex: 1000
+                    backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex',
+                    alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+                    padding: '1rem', backdropFilter: 'blur(3px)'
                 }}>
-                    <div className="card" style={{ width: '100%', maxWidth: '500px', margin: '1rem' }}>
-                        <h3 style={{ marginBottom: '1.5rem', color: 'hsl(var(--color-primary))' }}>
-                            {editingProduct ? 'تعديل منتج' : 'إضافة منتج جديد'}
-                        </h3>
+                    <div className="card" style={{ width: '100%', maxWidth: '800px', maxHeight: '90vh', overflowY: 'auto', padding: '0', borderRadius: '12px' }}>
+                        <div style={{ padding: '1.5rem', borderBottom: '1px solid #e2e8f0', backgroundColor: '#f8fafc', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <h3 style={{ margin: 0, color: 'hsl(var(--color-primary))', fontSize: '1.25rem' }}>
+                                {editingProduct ? 'تعديل بيانات المنتج' : 'إضافة منتج جديد'}
+                            </h3>
+                            <button onClick={handleCloseModal} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#64748b' }}>&times;</button>
+                        </div>
 
-                        <form onSubmit={handleSave}>
-                            <div className="input-group">
-                                <label style={{ display: 'block', marginBottom: '0.5rem' }}>اسم المنتج</label>
-                                <input
-                                    type="text"
-                                    className="input-field"
-                                    value={formData.name}
-                                    onChange={e => setFormData({ ...formData, name: e.target.value })}
-                                    required
-                                />
-                            </div>
+                        <form onSubmit={handleSave} style={{ padding: '2rem' }}>
 
-                            <div className="input-group">
-                                <label style={{ display: 'block', marginBottom: '0.5rem' }}>المنتج الأب (الرئيسي)</label>
-                                <select
-                                    className="input-field"
-                                    value={formData.parentProduct || ''}
-                                    onChange={e => setFormData({ ...formData, parentProduct: e.target.value })}
-                                >
-                                    <option value="">-- بدون منتج أب --</option>
-                                    {products
-                                        .filter(p => p.id !== (editingProduct?.id)) // Prevent self-selection
-                                        .map(p => (
-                                            <option key={p.id} value={p.id}>{p.name}</option>
-                                        ))
-                                    }
-                                </select>
-                                <small style={{ color: 'hsl(var(--color-text-muted))' }}>
-                                    اختر منتجاً ليكون هذا المنتج تابعاً له (فرعي).
-                                </small>
-                            </div>
+                            {/* Grid Layout */}
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '2rem' }}>
 
-                            <div className="input-group">
-                                <label style={{ display: 'block', marginBottom: '0.5rem' }}>الوحدة (unit)</label>
-                                <input
-                                    type="text"
-                                    className="input-field"
-                                    value={formData.unit}
-                                    onChange={e => setFormData({ ...formData, unit: e.target.value })}
-                                    placeholder="مثال: حبة، كرتون"
-                                />
-                            </div>
+                                {/* Section 1: Basic Info */}
+                                <div>
+                                    <h4 style={{ marginBottom: '1rem', color: '#334155', borderBottom: '2px solid #e2e8f0', paddingBottom: '0.5rem' }}>البيانات الأساسية</h4>
 
-                            <div className="input-group">
-                                <label style={{ display: 'block', marginBottom: '0.5rem' }}>الوحدة الفرعية (unitF - اختياري)</label>
-                                <input
-                                    type="text"
-                                    className="input-field"
-                                    value={formData.unitF}
-                                    onChange={e => setFormData({ ...formData, unitF: e.target.value })}
-                                />
-                            </div>
+                                    <div className="input-group">
+                                        <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>اسم المنتج <span style={{ color: 'red' }}>*</span></label>
+                                        <input
+                                            type="text"
+                                            className="input-field"
+                                            value={formData.name}
+                                            onChange={e => setFormData({ ...formData, name: e.target.value })}
+                                            required
+                                            placeholder="أدخل اسم المنتج"
+                                            style={{ borderColor: formData.name ? '#e2e8f0' : '#fca5a5' }}
+                                        />
+                                    </div>
 
-                            <div className="input-group">
-                                <label style={{ display: 'block', marginBottom: '0.5rem' }}>ترتيب العرض</label>
-                                <input
-                                    type="number"
-                                    className="input-field"
-                                    value={formData.sortOrder}
-                                    onChange={e => setFormData({ ...formData, sortOrder: e.target.value })}
-                                    placeholder="0"
-                                />
-                                <small style={{ color: 'hsl(var(--color-text-muted))' }}>
-                                    الأرقام الأقل تظهر أولاً
-                                </small>
-                            </div>
-
-                            {!editingProduct && (
-                                <div className="input-group" style={{ backgroundColor: '#f0f9ff', padding: '1rem', borderRadius: '8px', border: '1px solid #bae6fd' }}>
-                                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold', color: '#0369a1' }}>خيارات الإضافة</label>
-                                    <div style={{ display: 'flex', gap: '1.5rem' }}>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                                        <div className="input-group">
+                                            <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>الوحدة الأساسية</label>
                                             <input
-                                                type="radio"
-                                                name="targetBranch"
-                                                value="current"
-                                                checked={formData.targetBranch === 'current'}
-                                                onChange={e => setFormData({ ...formData, targetBranch: e.target.value })}
+                                                type="text"
+                                                className="input-field"
+                                                value={formData.unit}
+                                                onChange={e => setFormData({ ...formData, unit: e.target.value })}
+                                                placeholder="مثال: حبة"
                                             />
-                                            <span>الفرع الحالي فقط ({selectedCity === 'ryad' ? 'الرياض' : 'خارج الرياض'})</span>
-                                        </label>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                                        </div>
+                                        <div className="input-group">
+                                            <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>الوحدة الفرعية</label>
                                             <input
-                                                type="radio"
-                                                name="targetBranch"
-                                                value="both"
-                                                checked={formData.targetBranch === 'both'}
-                                                onChange={e => setFormData({ ...formData, targetBranch: e.target.value })}
+                                                type="text"
+                                                className="input-field"
+                                                value={formData.unitF}
+                                                onChange={e => setFormData({ ...formData, unitF: e.target.value })}
+                                                placeholder="مثال: كرتون"
                                             />
-                                            <span>كلا الفرعين (عام)</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="input-group">
+                                        <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>ترتيب العرض</label>
+                                        <input
+                                            type="number"
+                                            className="input-field"
+                                            value={formData.sortOrder}
+                                            onChange={e => setFormData({ ...formData, sortOrder: e.target.value })}
+                                            placeholder="0"
+                                        />
+                                        <small style={{ color: 'hsl(var(--color-text-muted))', fontSize: '0.8rem' }}>الأرقام الأقل تظهر أولاً في القائمة</small>
+                                    </div>
+
+                                    <div className="input-group" style={{ marginTop: '1.5rem' }}>
+                                        <label style={{
+                                            display: 'flex', alignItems: 'center', gap: '0.75rem',
+                                            padding: '0.75rem', border: '1px solid #cbd5e1',
+                                            borderRadius: '8px', cursor: 'pointer',
+                                            backgroundColor: formData.isSales ? '#eff6ff' : 'transparent',
+                                            borderColor: formData.isSales ? '#3b82f6' : '#cbd5e1',
+                                            transition: 'all 0.2s'
+                                        }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={formData.isSales}
+                                                onChange={e => setFormData({ ...formData, isSales: e.target.checked })}
+                                                style={{ width: '1.25rem', height: '1.25rem', accentColor: 'hsl(var(--color-primary))' }}
+                                            />
+                                            <div>
+                                                <div style={{ fontWeight: '600', color: '#1e293b' }}>بيع مباشر فقط ؟</div>
+                                                {/* <div style={{ fontSize: '0.8rem', color: '#64748b' }}>يظهر في قائمة المبيعات للعملاء</div> */}
+                                            </div>
                                         </label>
                                     </div>
                                 </div>
-                            )}
 
-                            <div style={{ display: 'flex', gap: '1rem', marginTop: '2rem' }}>
-                                <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>حفظ</button>
+                                {/* Section 2: Relations & Advanced */}
+                                <div>
+                                    <h4 style={{ marginBottom: '1rem', color: '#334155', borderBottom: '2px solid #e2e8f0', paddingBottom: '0.5rem' }}>العلاقات والمخزون</h4>
+
+                                    <div className="input-group">
+                                        <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>المنتج الأب (التصنيف الرئيسي)</label>
+                                        <select
+                                            className="input-field"
+                                            value={formData.parentProduct || ''}
+                                            onChange={e => setFormData({ ...formData, parentProduct: e.target.value })}
+                                            style={{ backgroundColor: '#fff' }}
+                                        >
+                                            <option value="">-- منتج مستقل (بدون أب) --</option>
+                                            {products
+                                                .filter(p => p.id !== (editingProduct?.id))
+                                                .map(p => (
+                                                    <option key={p.id} value={p.id}>{p.name}</option>
+                                                ))
+                                            }
+                                        </select>
+                                    </div>
+
+                                    <div className="input-group">
+                                        <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>خصم المخزون من</label>
+                                        <select
+                                            className="input-field"
+                                            value={formData.deductFromProduct || ''}
+                                            onChange={e => setFormData({ ...formData, deductFromProduct: e.target.value })}
+                                            style={{ backgroundColor: formData.deductFromProduct ? '#fff7ed' : '#fff' }}
+                                        >
+                                            <option value="">-- يخصم من نفس المنتج --</option>
+                                            {products
+                                                .filter(p => p.id !== (editingProduct?.id))
+                                                .map(p => (
+                                                    <option key={p.id} value={p.id}>{p.name}</option>
+                                                ))
+                                            }
+                                        </select>
+                                        <small style={{ color: 'hsl(var(--color-text-muted))', fontSize: '0.8rem', display: 'block', marginTop: '0.25rem' }}>
+                                            عند بيع هذا المنتج، سيتم خصم الكمية من رصيد المنتج المختار هنا.
+                                        </small>
+                                    </div>
+
+                                    {/* Conditional Deduct Amount */}
+                                    {formData.deductFromProduct && (
+                                        <div className="input-group" style={{
+                                            marginRight: '1rem', borderRight: '2px solid #fdba74', paddingRight: '1rem',
+                                            animation: 'fadeIn 0.3s ease-in-out'
+                                        }}>
+                                            <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500', color: '#c2410c' }}>
+                                                كمية الخصم
+                                            </label>
+                                            <input
+                                                type="number"
+                                                className="input-field"
+                                                value={formData.deductAmount}
+                                                onChange={e => setFormData({ ...formData, deductAmount: e.target.value })}
+                                                step="any"
+                                                min="0"
+                                                placeholder="1"
+                                                style={{ borderColor: '#fdba74', backgroundColor: '#fff7ed' }}
+                                            />
+                                            <small style={{ color: '#ea580c', fontSize: '0.8rem' }}>
+                                                مقدار ما يتم خصمه من المنتج الأصلي عند بيع حبة واحدة من هذا المنتج.
+                                            </small>
+                                            <style>{`@keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }`}</style>
+                                        </div>
+                                    )}
+
+                                    {!editingProduct && (
+                                        <div style={{ marginTop: '2rem', backgroundColor: '#f0f9ff', padding: '1.25rem', borderRadius: '10px', border: '1px solid #bae6fd' }}>
+                                            <label style={{ display: 'block', marginBottom: '1rem', fontWeight: '700', color: '#0369a1', fontSize: '0.95rem' }}>
+                                                🏢 خيارات الإضافة للفروع
+                                            </label>
+                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                                                    <input
+                                                        type="radio"
+                                                        name="targetBranch"
+                                                        value="current"
+                                                        checked={formData.targetBranch === 'current'}
+                                                        onChange={e => setFormData({ ...formData, targetBranch: e.target.value })}
+                                                        style={{ width: '1.1rem', height: '1.1rem' }}
+                                                    />
+                                                    <span style={{ color: '#334155' }}>إضافة للفرع الحالي فقط <strong>({selectedCity === 'ryad' ? 'الرياض' : 'خارج الرياض'})</strong></span>
+                                                </label>
+                                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                                                    <input
+                                                        type="radio"
+                                                        name="targetBranch"
+                                                        value="both"
+                                                        checked={formData.targetBranch === 'both'}
+                                                        onChange={e => setFormData({ ...formData, targetBranch: e.target.value })}
+                                                        style={{ width: '1.1rem', height: '1.1rem' }}
+                                                    />
+                                                    <span style={{ color: '#334155' }}>إضافة <strong>لكلا الفرعين</strong> في وقت واحد</span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Footer Actions */}
+                            <div style={{ display: 'flex', gap: '1rem', marginTop: '2.5rem', paddingTop: '1.5rem', borderTop: '1px solid #f1f5f9' }}>
+                                <button type="submit" className="btn btn-primary" style={{ flex: 2, padding: '0.85rem', fontSize: '1rem' }}>
+                                    {isSubmitting ? 'جاري الحفظ...' : 'حفظ البيانات'}
+                                </button>
                                 <button
                                     type="button"
                                     onClick={handleCloseModal}
                                     className="btn"
-                                    style={{ flex: 1, backgroundColor: '#f1f5f9', color: '#64748b' }}
+                                    style={{ flex: 1, backgroundColor: '#f1f5f9', color: '#64748b', border: '1px solid #e2e8f0' }}
                                 >
                                     إلغاء
                                 </button>
