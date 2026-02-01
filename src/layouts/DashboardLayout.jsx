@@ -212,6 +212,18 @@ const DashboardLayout = ({ children, title, role }) => {
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        {/* Version Badge */}
+                        <div style={{
+                            fontSize: '0.75rem',
+                            color: '#64748b',
+                            backgroundColor: '#f1f5f9',
+                            padding: '0.25rem 0.5rem',
+                            borderRadius: '12px',
+                            border: '1px solid #e2e8f0'
+                        }}>
+                            v1.5
+                        </div>
+
                         {/* Use Name Display */}
                         <div style={{ textAlign: 'right' }}>
                             {userName && (

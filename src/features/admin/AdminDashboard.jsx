@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import DashboardLayout from '../../layouts/DashboardLayout';
-import { collection, query, where, getDocs, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, setDoc } from "firebase/firestore";
+import { collection, query, where, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { db } from '../../config/firebase';
 
 const AdminDashboard = () => {
@@ -73,7 +73,7 @@ const AdminDashboard = () => {
         fetchTypes();
     }, []);
 
-    // 2. Fetch Products when City or Type changes
+    // 2. Fetch Products (Smart Caching)
     useEffect(() => {
         const fetchProducts = async () => {
             if (!selectedOrderType) {
@@ -81,25 +81,73 @@ const AdminDashboard = () => {
                 return;
             }
 
-            setLoadingProducts(true);
+            const cacheKey = `products_${selectedCity}_${selectedOrderType}`;
+            const cachedDataString = localStorage.getItem(cacheKey);
+            let cachedData = null;
+
+            // 1. Try Load Local
+            if (cachedDataString) {
+                try {
+                    cachedData = JSON.parse(cachedDataString);
+                    if (cachedData && Array.isArray(cachedData.items)) {
+                        setProducts(cachedData.items);
+                    }
+                } catch (e) {
+                    console.error("Cache parse error", e);
+                }
+            }
+
+            // If no cache, we must show loading
+            if (!cachedData) {
+                setLoadingProducts(true);
+            }
+
             try {
-                const productsRef = collection(db, "products");
-                const q = query(
-                    productsRef,
-                    where("typeId", "==", selectedOrderType),
-                    where("city", "==", selectedCity)
-                );
+                // 2. Check ProductUpdates from Server
+                const updatesRef = collection(db, "productUpdates");
+                const qUpdate = query(updatesRef, where("city", "==", selectedCity), where("typeId", "==", selectedOrderType));
+                const updateSnap = await getDocs(qUpdate);
 
-                const querySnapshot = await getDocs(q);
-                const items = querySnapshot.docs.map(doc => ({
-                    id: doc.id,
-                    ...doc.data()
-                }));
+                let serverValues = null;
+                if (!updateSnap.empty) {
+                    serverValues = updateSnap.docs[0].data();
+                }
 
-                // Client-side sort
-                items.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+                const serverLastUpdate = serverValues?.updatedAt?.toMillis() || 0;
+                const localLastSync = cachedData?.lastSync || 0;
 
-                setProducts(items);
+                // 3. Decide: Fetch if No Cache OR Server is Newer
+                if (!cachedData || serverLastUpdate > localLastSync) {
+                    console.log("Fetching fresh data from server...");
+                    if (!cachedData) setLoadingProducts(true);
+
+                    const productsRef = collection(db, "products");
+                    const q = query(
+                        productsRef,
+                        where("typeId", "==", selectedOrderType),
+                        where("city", "==", selectedCity)
+                    );
+
+                    const querySnapshot = await getDocs(q);
+                    const items = querySnapshot.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data()
+                    }));
+
+                    // Client-side sort
+                    items.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+
+                    setProducts(items);
+
+                    // 4. Update Cache
+                    localStorage.setItem(cacheKey, JSON.stringify({
+                        items: items,
+                        lastSync: Date.now()
+                    }));
+                } else {
+                    console.log("Cache is up to date.");
+                }
+
             } catch (error) {
                 console.error("Error fetching admin products:", error);
             } finally {
@@ -123,6 +171,7 @@ const AdminDashboard = () => {
                 sortOrder: product.sortOrder || 0,
                 isSales: product.isSales || false,
                 deductFromProduct: product.deductFromProduct || '',
+                deductAmount: product.deductAmount || 1,
                 targetBranch: 'current'
             });
         } else {
@@ -135,6 +184,7 @@ const AdminDashboard = () => {
                 sortOrder: 0,
                 isSales: false,
                 deductFromProduct: '',
+                deductAmount: 1,
                 targetBranch: 'current'
             });
         }
@@ -149,26 +199,14 @@ const AdminDashboard = () => {
     // Helper: Trigger update for sync
     const triggerUpdate = async (city, typeId) => {
         try {
-            const updatesRef = collection(db, "productUpdates");
-            const q = query(updatesRef, where("city", "==", city), where("typeId", "==", typeId));
-            const querySnapshot = await getDocs(q);
-
-            if (!querySnapshot.empty) {
-                // Update existing
-                const docId = querySnapshot.docs[0].id;
-                await updateDoc(doc(db, "productUpdates", docId), {
-                    updatedAt: serverTimestamp()
-                });
-                console.log(`Triggered update for existing doc: ${docId}`);
-            } else {
-                // Create new
-                await addDoc(updatesRef, {
-                    city,
-                    typeId,
-                    updatedAt: serverTimestamp()
-                });
-                console.log(`Created new update trigger for ${city} - ${typeId}`);
-            }
+            // Use deterministic ID to avoid query sorting issues and ensure single source of truth
+            const docId = `${city}_${typeId}`;
+            await setDoc(doc(db, "productUpdates", docId), {
+                city,
+                typeId,
+                updatedAt: serverTimestamp()
+            });
+            console.log(`Triggered update for ${docId}`);
         } catch (error) {
             console.error("Error triggering update:", error);
         }
@@ -198,6 +236,19 @@ const AdminDashboard = () => {
                 updatedAt: serverTimestamp()
             };
 
+            // Helper to update local state and cache
+            const updateLocalData = (newList) => {
+                const sortedList = newList.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+                setProducts(sortedList);
+
+                // Update Cache immediately
+                const cacheKey = `products_${selectedCity}_${selectedOrderType}`;
+                localStorage.setItem(cacheKey, JSON.stringify({
+                    items: sortedList,
+                    lastSync: Date.now()
+                }));
+            };
+
             if (editingProduct) {
                 // UPDATE (Single product only)
                 const docRef = doc(db, "products", editingProduct.id);
@@ -206,11 +257,10 @@ const AdminDashboard = () => {
 
                 await updateDoc(docRef, updateData);
 
-                // Update local state
-                setProducts(prev => {
-                    const updated = prev.map(p => p.id === editingProduct.id ? { ...p, ...updateData } : p);
-                    return updated.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
-                });
+                // Update local state & Cache
+                const newList = products.map(p => p.id === editingProduct.id ? { ...p, ...updateData } : p);
+                updateLocalData(newList);
+
                 showNotification('success', "تم تحديث المنتج بنجاح");
                 await triggerUpdate(selectedCity, selectedOrderType);
 
@@ -223,15 +273,18 @@ const AdminDashboard = () => {
                         const newDocData = { ...baseData, city, createdAt: serverTimestamp() };
                         await addDoc(collection(db, "products"), newDocData);
                         await triggerUpdate(city, selectedOrderType);
+
+                        // If we just added to the OTHER city, we should technically clear its cache so it refetches next time
+                        if (city !== selectedCity) {
+                            const otherKey = `products_${city}_${selectedOrderType}`;
+                            localStorage.removeItem(otherKey); // Force refetch for other branch
+                        }
                     }
 
-                    // We need to refresh the list because we added multiple independent docs
-                    // (Simplest way to sync UI is to trigger a re-fetch or manually add the one that matches current city)
+                    // For Current Branch
                     const matchesCurrent = { ...baseData, city: selectedCity, createdAt: new Date() }; // Mock obj for UI
-                    setProducts(prev => {
-                        const newList = [...prev, matchesCurrent];
-                        return newList.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
-                    });
+                    const newList = [...products, matchesCurrent];
+                    updateLocalData(newList);
 
                     showNotification('success', "تم إضافة المنتج للفرعين بنجاح");
 
@@ -240,10 +293,8 @@ const AdminDashboard = () => {
                     const newDocData = { ...baseData, city: selectedCity, createdAt: serverTimestamp() };
                     const docRef = await addDoc(collection(db, "products"), newDocData);
 
-                    setProducts(prev => {
-                        const newList = [...prev, { id: docRef.id, ...newDocData }];
-                        return newList.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
-                    });
+                    const newList = [...products, { id: docRef.id, ...newDocData }];
+                    updateLocalData(newList);
 
                     await triggerUpdate(selectedCity, selectedOrderType);
                     showNotification('success', "تم إضافة المنتج بنجاح");
@@ -268,7 +319,15 @@ const AdminDashboard = () => {
             const productToDelete = products.find(p => p.id === productId);
 
             await deleteDoc(doc(db, "products", productId));
-            setProducts(prev => prev.filter(p => p.id !== productId));
+
+            // Update Local & Cache
+            const newList = products.filter(p => p.id !== productId);
+            setProducts(newList);
+            const cacheKey = `products_${selectedCity}_${selectedOrderType}`;
+            localStorage.setItem(cacheKey, JSON.stringify({
+                items: newList,
+                lastSync: Date.now()
+            }));
 
             if (productToDelete) {
                 await triggerUpdate(productToDelete.city, productToDelete.typeId);
