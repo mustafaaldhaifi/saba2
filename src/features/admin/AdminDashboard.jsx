@@ -16,7 +16,14 @@ const AdminDashboard = () => {
     // Modal / Form
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [editingProduct, setEditingProduct] = useState(null); // null = adding new
-    const [formData, setFormData] = useState({ name: '', unit: '', unitF: '', parentProduct: '' });
+    const [formData, setFormData] = useState({
+        name: '',
+        unit: '',
+        unitF: '',
+        parentProduct: '',
+        sortOrder: 0,
+        targetBranch: 'current' // 'current' or 'both'
+    });
 
     // UI States
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -78,6 +85,10 @@ const AdminDashboard = () => {
                     id: doc.id,
                     ...doc.data()
                 }));
+
+                // Client-side sort
+                items.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+
                 setProducts(items);
             } catch (error) {
                 console.error("Error fetching admin products:", error);
@@ -98,11 +109,20 @@ const AdminDashboard = () => {
                 name: product.name || '',
                 unit: product.unit || '',
                 unitF: product.unitF || '',
-                parentProduct: product.parentProduct || ''
+                parentProduct: product.parentProduct || '',
+                sortOrder: product.sortOrder || 0,
+                targetBranch: 'current'
             });
         } else {
             setEditingProduct(null);
-            setFormData({ name: '', unit: '', unitF: '', parentProduct: '' });
+            setFormData({
+                name: '',
+                unit: '',
+                unitF: '',
+                parentProduct: '',
+                sortOrder: 0,
+                targetBranch: 'current'
+            });
         }
         setIsModalOpen(true);
     };
@@ -150,36 +170,68 @@ const AdminDashboard = () => {
 
         setIsSubmitting(true);
         try {
-            const productData = {
+            // Base Data
+            const baseData = {
                 name: formData.name,
                 unit: formData.unit,
                 unitF: formData.unitF,
                 typeId: selectedOrderType,
-                city: selectedCity,
                 parentProduct: formData.parentProduct || null,
+                sortOrder: Number(formData.sortOrder) || 0,
                 updatedAt: serverTimestamp()
             };
 
             if (editingProduct) {
-                // Update
+                // UPDATE (Single product only)
                 const docRef = doc(db, "products", editingProduct.id);
-                await updateDoc(docRef, productData);
+                // Ensure we don't accidentally change city during edit logic unless intended (here we stick to current)
+                const updateData = { ...baseData, city: selectedCity };
+
+                await updateDoc(docRef, updateData);
 
                 // Update local state
-                setProducts(prev => prev.map(p => p.id === editingProduct.id ? { ...p, ...productData } : p));
+                setProducts(prev => {
+                    const updated = prev.map(p => p.id === editingProduct.id ? { ...p, ...updateData } : p);
+                    return updated.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+                });
                 showNotification('success', "تم تحديث المنتج بنجاح");
+                await triggerUpdate(selectedCity, selectedOrderType);
+
             } else {
-                // Create
-                productData.createdAt = serverTimestamp();
-                const docRef = await addDoc(collection(db, "products"), productData);
+                // CREATE (Check for Both Branches)
+                if (formData.targetBranch === 'both') {
+                    const citiesToCreate = ['ryad', 'other'];
 
-                // Update local state
-                setProducts(prev => [...prev, { id: docRef.id, ...productData }]);
-                showNotification('success', "تم إضافة المنتج بنجاح");
+                    for (const city of citiesToCreate) {
+                        const newDocData = { ...baseData, city, createdAt: serverTimestamp() };
+                        await addDoc(collection(db, "products"), newDocData);
+                        await triggerUpdate(city, selectedOrderType);
+                    }
+
+                    // We need to refresh the list because we added multiple independent docs
+                    // (Simplest way to sync UI is to trigger a re-fetch or manually add the one that matches current city)
+                    const matchesCurrent = { ...baseData, city: selectedCity, createdAt: new Date() }; // Mock obj for UI
+                    setProducts(prev => {
+                        const newList = [...prev, matchesCurrent];
+                        return newList.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+                    });
+
+                    showNotification('success', "تم إضافة المنتج للفرعين بنجاح");
+
+                } else {
+                    // CREATE (Single Branch)
+                    const newDocData = { ...baseData, city: selectedCity, createdAt: serverTimestamp() };
+                    const docRef = await addDoc(collection(db, "products"), newDocData);
+
+                    setProducts(prev => {
+                        const newList = [...prev, { id: docRef.id, ...newDocData }];
+                        return newList.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+                    });
+
+                    await triggerUpdate(selectedCity, selectedOrderType);
+                    showNotification('success', "تم إضافة المنتج بنجاح");
+                }
             }
-
-            // Trigger Sync Update (Non-blocking usually, but we await to ensure order)
-            await triggerUpdate(selectedCity, selectedOrderType);
 
             handleCloseModal();
         } catch (error) {
@@ -280,6 +332,7 @@ const AdminDashboard = () => {
                                 <tr style={{ backgroundColor: '#f8fafc', color: 'hsl(var(--color-text-muted))', textAlign: 'right' }}>
                                     <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>الاسم</th>
                                     <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>المنتج الأب</th>
+                                    <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>الترتيب</th>
                                     <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>الوحدة</th>
                                     <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>إجراءات</th>
                                 </tr>
@@ -295,6 +348,7 @@ const AdminDashboard = () => {
                                         <tr key={product.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
                                             <td style={{ padding: '0.75rem', fontWeight: '500' }}>{product.name}</td>
                                             <td style={{ padding: '0.75rem', color: 'hsl(var(--color-primary))', fontSize: '0.9rem' }}>{parentName}</td>
+                                            <td style={{ padding: '0.75rem' }}>{product.sortOrder || 0}</td>
                                             <td style={{ padding: '0.75rem' }}>{product.unitF || product.unit || '-'}</td>
                                             <td style={{ padding: '0.75rem', display: 'flex', gap: '0.5rem' }}>
                                                 <button
@@ -391,6 +445,48 @@ const AdminDashboard = () => {
                                     onChange={e => setFormData({ ...formData, unitF: e.target.value })}
                                 />
                             </div>
+
+                            <div className="input-group">
+                                <label style={{ display: 'block', marginBottom: '0.5rem' }}>ترتيب العرض</label>
+                                <input
+                                    type="number"
+                                    className="input-field"
+                                    value={formData.sortOrder}
+                                    onChange={e => setFormData({ ...formData, sortOrder: e.target.value })}
+                                    placeholder="0"
+                                />
+                                <small style={{ color: 'hsl(var(--color-text-muted))' }}>
+                                    الأرقام الأقل تظهر أولاً
+                                </small>
+                            </div>
+
+                            {!editingProduct && (
+                                <div className="input-group" style={{ backgroundColor: '#f0f9ff', padding: '1rem', borderRadius: '8px', border: '1px solid #bae6fd' }}>
+                                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: 'bold', color: '#0369a1' }}>خيارات الإضافة</label>
+                                    <div style={{ display: 'flex', gap: '1.5rem' }}>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                                            <input
+                                                type="radio"
+                                                name="targetBranch"
+                                                value="current"
+                                                checked={formData.targetBranch === 'current'}
+                                                onChange={e => setFormData({ ...formData, targetBranch: e.target.value })}
+                                            />
+                                            <span>الفرع الحالي فقط ({selectedCity === 'ryad' ? 'الرياض' : 'خارج الرياض'})</span>
+                                        </label>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                                            <input
+                                                type="radio"
+                                                name="targetBranch"
+                                                value="both"
+                                                checked={formData.targetBranch === 'both'}
+                                                onChange={e => setFormData({ ...formData, targetBranch: e.target.value })}
+                                            />
+                                            <span>كلا الفرعين (عام)</span>
+                                        </label>
+                                    </div>
+                                </div>
+                            )}
 
                             <div style={{ display: 'flex', gap: '1rem', marginTop: '2rem' }}>
                                 <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>حفظ</button>
