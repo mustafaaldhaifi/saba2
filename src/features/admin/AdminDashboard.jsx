@@ -6,43 +6,41 @@ import { db } from '../../config/firebase';
 // Helper: Calculate Remaining Stock
 // Helper: Calculate Remaining Stock
 // Helper: Calculate Remaining Stock
-const calculateRemaining = (parentReport, childReports = [], productId, openingStockData = [], branchId, unit = 1) => {
+const calculateRemaining = (reports, product) => {
     const val = (v) => Number(v || 0);
+    const unit = Number(product?.unit) || 1;
+    const { parent, children } = reports || {};
 
-    // 1. Opening Stock Logic (Priority: OpeningStock Collection > Daily Report)
-    // const openingItem = openingStockData?.find(o => o.productId === productId && o.branchId === branchId);
-    let openingStock = val(parentReport?.openingStockQnt);;
-    console.log('openingStockP', parentReport);
-    console.log('openingStockC', childReports);
+    // 1. Opening Stock
+
+    const parentOp = val(parent?.openingStockQnt);
+    const childOp = children ? children.reduce((acc, c) => acc + val(c?.openingStockQnt), 0) : 0;
+    const openingStock = parentOp + childOp;
 
 
+    // 2. Helper to get total for a field (Parent * Unit + Children)
+    const getFieldTotal = (field) => {
+        const pVal = val(parent?.[field]);
+        const cVal = children ? children.reduce((acc, c) => acc + val(c?.[field]), 0) : 0;
 
-    // if (openingItem) {
-    //     openingStock = val(openingItem.openingStockQnt);
-    // } else {
-    //     openingStock = val(parentReport?.openingStockQnt);
-    // }
-
-    // Parent-specific fields
-    const recieved = val(parentReport?.recieved);
-    const transfer = val(parentReport?.transfer);
-
-    // 2. Aggregated fields (from children if exist, else parent)
-    const sumField = (field) => {
-        if (childReports && childReports.length > 0) {
-            return childReports.reduce((total, child) => total + val(child?.[field]), 0);
+        // For Sales/Consumption, if children exist, only count children sales (ignore parent "main" count to avoid duplicates)
+        if (children && children.length > 0 && ['sales', 'staffMeal', 'dameged'].includes(field)) {
+            return cVal;
         }
-        return val(parentReport?.[field]);
+
+        // اضرب الأب في الوحدة، واجمع الأبناء كما هم
+        return (pVal * unit) + cVal;
     };
 
-    const add = sumField('add'); // 'add' might not be in UI but requested in calc
-    const sales = sumField('sales');
-    const staffMeal = sumField('staffMeal');
-    const dameged = sumField('dameged');
+    const totalRec = getFieldTotal('recieved');
+    const totalTrans = getFieldTotal('transfer');
+    const totalAdd = getFieldTotal('add');
+    const totalSales = getFieldTotal('sales');
+    const totalStaff = getFieldTotal('staffMeal');
+    const totalDamaged = getFieldTotal('dameged');
 
     // 3. Calculation
-    // Total = Op + (Rec * Unit) + Add - Sales - Staff - Transfer - Damaged
-    const total = openingStock + (recieved * unit) + add - sales - staffMeal - transfer - dameged;
+    const total = openingStock + totalRec + totalAdd - totalSales - totalStaff - totalTrans - totalDamaged;
 
     return isNaN(total) ? '-' : total;
 };
@@ -613,11 +611,11 @@ const AdminDashboard = () => {
 
         setIsSubmitting(true);
         try {
-            // Fetch History for Parent AND Children
+            // 1. Fetch History & Calculate
             const childProducts = products.filter(p => p.parentProduct === editingStockItem.id);
             const targetIds = [editingStockItem.id, ...childProducts.map(p => p.id)];
 
-            // Parallel Fetch to avoid "IN" query limits or index issues
+            // Parallel Fetch
             const snapshots = await Promise.all(
                 targetIds.map(id => {
                     const q = query(
@@ -630,10 +628,8 @@ const AdminDashboard = () => {
                 })
             );
 
-            // Flatten and Group by Date
+            // Flatten and Group
             const rawDocs = snapshots.flatMap(s => s.docs.map(d => d.data()));
-
-            // Helper to get reliable date string key
             const getDateKey = (seconds) => {
                 if (!seconds) return 'unknown';
                 const d = new Date(seconds * 1000);
@@ -659,98 +655,65 @@ const AdminDashboard = () => {
                 }
             });
 
-            // Convert to Array and Sort
-            const history = Object.values(groupedByDate).sort((a, b) => {
-                return (a.date?.seconds || 0) - (b.date?.seconds || 0);
-            });
+            // Convert and Sort
+            const history = Object.values(groupedByDate).sort((a, b) => (a.date?.seconds || 0) - (b.date?.seconds || 0));
 
-            setSettlementHistory(history); // Store { date, parent, children[] }
-
-            // Calculate Cumulative/Closing Flow
+            // Calculate Flow for ALL history (User requested full view)
             const val = (v) => Number(v || 0);
             const unit = Number(editingStockItem.unit) || 1;
             let runningBalance = 0;
-
+            let finalStock = 0;
             const calculatedHistory = history.map((dayArgs, idx) => {
                 const { parent, children } = dayArgs;
 
+                // Calculate logic unified with calculateRemaining
                 const sum = (field) => {
-                    let s = parent ? val(parent[field]) : 0;
-                    if (children && children.length > 0) {
-                        s += children.reduce((acc, c) => acc + val(c[field]), 0);
+                    const pVal = parent ? val(parent[field]) : 0;
+                    const cVal = (children && children.length > 0) ? children.reduce((acc, c) => acc + val(c[field]), 0) : 0;
+
+                    // Exclude Parent "Main" count for consumption if Children exist
+                    if (children && children.length > 0 && ['sales', 'staffMeal', 'dameged'].includes(field)) {
+                        return cVal;
                     }
-                    return s;
+
+                    // Otherwise sum Parent (Converted) + Children
+                    return (pVal * unit) + cVal;
                 };
 
                 const add = sum('add');
-
-                // Re-calculate sales sum using same logic for consistency
-                let sales = parent ? val(parent.sales) : 0;
-                if (children && children.length > 0) {
-                    sales += children.reduce((acc, c) => acc + val(c.sales), 0);
-                }
-
+                const sales = sum('sales');
                 const dameged = sum('dameged');
                 const staffMeal = sum('staffMeal');
+                const totalRec = sum('recieved');
+                const totalTrans = sum('transfer');
 
-                // Opening Stock Logic (In Pieces):
-                let effectiveOpening = 0;
 
-                if (idx === 0) {
-                    // First Record: Trust DB Opening
-                    const parentOpening = parent ? val(parent.openingStockQnt) : 0;
-                    const childOpening = children ? children.reduce((acc, c) => acc + val(c.openingStockQnt), 0) : 0;
-                    // Adjusted: Parent (Raw) + Child (Raw)
-                    effectiveOpening = parentOpening + childOpening;
-                    runningBalance = effectiveOpening;
-                } else {
-                    // Subsequent: Use Previous Closing
-                    effectiveOpening = runningBalance;
-                }
 
-                // Transactions (In Pieces)
-                const parentRec = parent ? val(parent.recieved) : 0;
-                const childRec = children ? children.reduce((acc, c) => acc + val(c.recieved), 0) : 0;
-                const totalRec = (parentRec * unit) + childRec;
+                const closing = calculateRemaining(
+                    { parent, children },
+                    { unit }
+                );
 
-                const parentTrans = parent ? val(parent.transfer) : 0;
-                const childTrans = children ? children.reduce((acc, c) => acc + val(c.transfer), 0) : 0;
-                const totalTrans = (parentTrans * unit) + childTrans;
-
-                // Net Change = Rec + Add - Sales - Out ...
-                const netChange = totalRec + add - sales - totalTrans - dameged - staffMeal;
-
-                const closing = effectiveOpening + netChange;
-
-                // Update Running Balance (Pieces)
-                runningBalance = closing;
+                runningBalance = closing; // Loop
 
                 return {
                     ...dayArgs,
-                    calculatedOpening: effectiveOpening,
+                    calculatedOpening: val(parent?.openingStockQnt, 0),
                     calculatedClosing: closing,
                     breakdowns: {
-                        add,
-                        sales,
-                        dameged,
-                        staffMeal,
-                        recieved: totalRec,
-                        transfer: totalTrans
+                        add, sales, dameged, staffMeal, recieved: totalRec, transfer: totalTrans
                     }
                 };
             });
 
             setSettlementHistory(calculatedHistory);
 
-            const finalStock = calculatedHistory.length > 0 ? calculatedHistory[calculatedHistory.length - 1].calculatedClosing : 0;
-
-            console.log(`Auto Settle: Calculated ${finalStock} (Pieces) from ${history.length} days.`);
-            setNewStockValue(finalStock);
-            showNotification('success', `تم الحساب وتصحيح التراكمي لـ ${history.length} سجلات`);
+            setNewStockValue(finalStock); // Update UI Input ONLY
+            showNotification('success', `تم الحساب. الرصيد المقترح: ${finalStock}. اضغط حفظ للتثبيت.`);
 
         } catch (error) {
             console.error("Auto Settle Error:", error);
-            showNotification('error', "فشل الحساب التلقائي");
+            showNotification('error', "فشل الحساب والتسوية");
         } finally {
             setIsSubmitting(false);
         }
@@ -763,7 +726,7 @@ const AdminDashboard = () => {
         try {
             const val = Number(newStockValue);
 
-            // Check if document exists
+            // 1. Update OpeningStock Collection
             const q = query(
                 collection(db, "openingStock"),
                 where("branchId", "==", selectedBranch),
@@ -1029,8 +992,8 @@ const AdminDashboard = () => {
                                                     </td>
 
                                                     {/* Common Data Columns Function */}
-                                                    {['openingStockQnt', 'actualOpening', 'recieved', 'closeStock', 'sales', 'staffMeal', 'transfer', 'dameged', 'remaining'].map(field => {
-                                                        const isParentField = ['openingStockQnt', 'actualOpening', 'recieved', 'transfer', 'remaining'].includes(field);
+                                                    {['openingStockQnt', 'actualOpening', 'recieved', 'add', 'sales', 'staffMeal', 'transfer', 'dameged', 'closeStock'].map(field => {
+                                                        const isParentField = ['openingStockQnt', 'actualOpening', 'recieved', 'transfer', 'closeStock'].includes(field);
 
                                                         // Case 1: Has Children & Field is Parent-Only -> Render Single Value for Parent
                                                         if (hasChildren && isParentField) {
@@ -1039,7 +1002,7 @@ const AdminDashboard = () => {
                                                             let displayValue = '-';
                                                             if (field === 'remaining') {
                                                                 const childReports = children.map(c => dailyReportData.find(d => d.productId === c.id));
-                                                                displayValue = calculateRemaining(parentReport, childReports, item.id, openingStockData, selectedBranch);
+                                                                displayValue = calculateRemaining({ parent: parentReport, children: childReports }, item);
                                                             } else if (field === 'actualOpening') {
                                                                 const oItem = openingStockData?.find(o => o.productId === item.id && o.branchId === selectedBranch);
                                                                 displayValue = oItem ? oItem.openingStockQnt : '-';
@@ -1055,6 +1018,23 @@ const AdminDashboard = () => {
                                                                         fontWeight: 'bold', fontSize: '14px'
                                                                     }}>
                                                                         {displayValue}
+                                                                        {field === 'remaining' && (() => {
+                                                                            const storedClose = (Number(parentReport?.closeStock) || 0) +
+                                                                                (children ? children.reduce((acc, c) => {
+                                                                                    const cr = dailyReportData.find(d => d.productId === c.id);
+                                                                                    return acc + (Number(cr?.closeStock) || 0);
+                                                                                }, 0) : 0);
+                                                                            const currentVal = Number(displayValue);
+                                                                            if (isNaN(currentVal)) return null;
+
+                                                                            const isMatch = Math.abs(currentVal - storedClose) < 0.1;
+                                                                            return (
+                                                                                <span title={`المخزن: ${storedClose}`} style={{ marginRight: '5px', fontSize: '10px', cursor: 'help', display: 'flex', alignItems: 'center', gap: '2px' }}>
+                                                                                    {isMatch ? '✅' : '❓'}
+                                                                                    <span style={{ color: 'gray' }}>{storedClose}</span>
+                                                                                </span>
+                                                                            );
+                                                                        })()}
                                                                         {field === 'actualOpening' && (
                                                                             <span
                                                                                 style={{ cursor: 'pointer', marginLeft: '5px', color: '#64748b' }}
@@ -1082,7 +1062,7 @@ const AdminDashboard = () => {
                                                                         // Value Logic
                                                                         let displayValue = '-';
                                                                         if (field === 'remaining') {
-                                                                            displayValue = calculateRemaining(report, [], rowItem.id, openingStockData, selectedBranch);
+                                                                            displayValue = calculateRemaining({ parent: report }, rowItem);
                                                                         } else if (field === 'actualOpening') {
                                                                             const oItem = openingStockData?.find(o => o.productId === rowItem.id && o.branchId === selectedBranch);
                                                                             displayValue = oItem ? oItem.openingStockQnt : '-';
@@ -1100,6 +1080,20 @@ const AdminDashboard = () => {
                                                                                 color: field === 'sales' ? '#22c55e' : 'inherit'
                                                                             }}>
                                                                                 {displayValue}
+                                                                                {field === 'remaining' && (() => {
+                                                                                    const storedClose = Number(report?.closeStock) || 0;
+                                                                                    const currentVal = Number(displayValue);
+                                                                                    // Show verification only if both are numbers (handles '-' case)
+                                                                                    if (isNaN(currentVal)) return null;
+
+                                                                                    const isMatch = Math.abs(currentVal - storedClose) < 0.1;
+                                                                                    return (
+                                                                                        <span title={`المخزن: ${storedClose}`} style={{ marginRight: '5px', fontSize: '10px', cursor: 'help', display: 'flex', alignItems: 'center', gap: '2px' }}>
+                                                                                            {isMatch ? '✅' : '❓'}
+                                                                                            <span style={{ color: 'gray' }}>{storedClose}</span>
+                                                                                        </span>
+                                                                                    );
+                                                                                })()}
                                                                                 {field === 'actualOpening' && (
                                                                                     <span
                                                                                         style={{ cursor: 'pointer', marginLeft: '5px', color: '#64748b', fontSize: '10px' }}
@@ -1537,25 +1531,34 @@ const AdminDashboard = () => {
 
                                                 // Helper to sum and list
                                                 const getSumAndList = (field) => {
-                                                    let total = parent ? val(parent[field]) : 0;
-                                                    let details = [];
-
-                                                    // For Received/Transfer, Parent value is in Units (Boxes), so convert to Pieces for display consistency
-                                                    const isUnitField = ['recieved', 'transfer'].includes(field);
+                                                    const isUnitField = ['recieved', 'transfer', 'add', 'openingStockQnt'].includes(field);
                                                     const parentRaw = val(parent?.[field]);
                                                     const parentDisplay = isUnitField ? parentRaw * unit : parentRaw;
 
-                                                    if (parent && parentRaw > 0) details.push({ name: 'رئيسي', val: parentDisplay });
+                                                    // Logic: Exclude Parent Sales if Children exist
+                                                    const shouldExcludeParent = (children && children.length > 0) && ['sales', 'staffMeal', 'dameged'].includes(field);
+
+                                                    let total = 0;
+                                                    let details = [];
+
+                                                    if (parent && parentRaw > 0) {
+                                                        if (!shouldExcludeParent) {
+                                                            total += parentDisplay;
+                                                            // Display Raw Value (Boxes) in the list for Unit fields (Received, Transfer, etc.), but total uses Pieces
+                                                            details.push({ name: 'رئيسي', val: isUnitField ? parentRaw : parentDisplay });
+                                                        }
+                                                    }
 
                                                     if (children) {
                                                         children.forEach(c => {
                                                             const v = val(c[field]);
                                                             if (v > 0) {
-                                                                total += v; // This total is local sum, but return uses breakdowns?.[field]
+                                                                total += v;
                                                                 details.push({ name: c.productName, val: v });
                                                             }
                                                         });
                                                     }
+                                                    // Use the calculated total from breakdowns to ensure match with handleAutoSettle
                                                     return { total: dayData.breakdowns?.[field] || total, details };
                                                 };
 
@@ -1591,6 +1594,9 @@ const AdminDashboard = () => {
                                                     </td>
                                                 );
 
+                                                const storedClose = (val(parent?.closeStock) || 0) + (children ? children.reduce((acc, c) => acc + val(c.closeStock), 0) : 0);
+                                                const isMatch = Math.abs(net - storedClose) < 0.1;
+
                                                 return (
                                                     <tr key={hIdx} style={{ borderBottom: '1px solid #f1f5f9' }}>
                                                         <td style={{ padding: '6px 8px' }}>{dateStr}</td>
@@ -1614,7 +1620,18 @@ const AdminDashboard = () => {
                                                         {renderCellWithDetails(transData, '#dc2626')}
                                                         {renderCellWithDetails(damData, '#dc2626')}
                                                         {renderCellWithDetails(staffData, '#dc2626')}
-                                                        <td style={{ padding: '6px 8px', fontWeight: 'bold', dir: 'ltr' }}>{net}</td>
+                                                        <td style={{ padding: '6px 8px', fontWeight: 'bold', dir: 'ltr', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                                            <span>{net}</span>
+                                                            <span title={`المخزن: ${storedClose}`} style={{
+                                                                cursor: 'help',
+                                                                fontSize: '12px',
+                                                                color: isMatch ? '#16a34a' : '#ef4444',
+                                                                display: 'flex', alignItems: 'center', gap: '2px'
+                                                            }}>
+                                                                {isMatch ? '✅' : '❓'}
+                                                                <span style={{ fontSize: '10px', color: 'gray' }}>{storedClose}</span>
+                                                            </span>
+                                                        </td>
                                                     </tr>
                                                 );
                                             })}
