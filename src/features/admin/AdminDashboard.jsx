@@ -724,6 +724,7 @@ const AdminDashboard = () => {
 
         setIsSubmitting(true);
         try {
+            const batch = writeBatch(db);
             const val = Number(newStockValue);
 
             // 1. Update OpeningStock Collection
@@ -735,20 +736,23 @@ const AdminDashboard = () => {
             );
             const snapshot = await getDocs(q);
 
+            let osRef;
             if (!snapshot.empty) {
                 // UPDATE
                 const docId = snapshot.docs[0].id;
-                await updateDoc(doc(db, "openingStock", docId), {
+                osRef = doc(db, "openingStock", docId);
+                batch.update(osRef, {
                     openingStockQnt: val,
                     updatedAt: serverTimestamp()
                 });
 
-                // Update Local State
+                // Optimistic Local Update
                 setOpeningStockData(prev => prev.map(o =>
                     o.id === docId ? { ...o, openingStockQnt: val } : o
                 ));
             } else {
                 // CREATE
+                osRef = doc(collection(db, "openingStock"));
                 const newDoc = {
                     branchId: selectedBranch,
                     typeId: selectedOrderType,
@@ -756,13 +760,52 @@ const AdminDashboard = () => {
                     openingStockQnt: val,
                     createdAt: serverTimestamp()
                 };
-                const ref = await addDoc(collection(db, "openingStock"), newDoc);
+                batch.set(osRef, newDoc);
 
-                // Update Local State
-                setOpeningStockData(prev => [...prev, { id: ref.id, ...newDoc }]);
+                // Optimistic Local Update
+                setOpeningStockData(prev => [...prev, { id: osRef.id, ...newDoc }]);
             }
 
-            showNotification('success', "تم تعديل الرصيد الافتتاحي بنجاح");
+            // 2. Update Daily Reports (Fix History) if Settlement ran
+            if (settlementHistory.length > 0) {
+                settlementHistory.forEach(day => {
+                    if (day.parent && day.parent.id) {
+                        const drRef = doc(db, "dailyReports", day.parent.id);
+                        batch.update(drRef, {
+                            openingStockQnt: day.calculatedOpening,
+                            closeStock: day.calculatedClosing,
+                            // We could update 'remaining' too if it was stored, but usually it's calculated
+                        });
+                    }
+                });
+            }
+
+            // 3. Trigger Update Signal (Dynamic ID)
+            const triggerQ = query(
+                collection(db, "dailyReportsUpdates"),
+                where("branchId", "==", selectedBranch),
+
+            );
+            const triggerSnap = await getDocs(triggerQ);
+
+            if (!triggerSnap.empty) {
+                // Update specific triggers found
+                triggerSnap.forEach(d => {
+                    batch.update(d.ref, { updatedAt: serverTimestamp() });
+                });
+            } else {
+                // Create new trigger doc if missing
+                const newTriggerRef = doc(collection(db, "dailyReportsUpdates"));
+                batch.set(newTriggerRef, {
+                    branchId: selectedBranch,
+                    typeId: selectedOrderType,
+                    updatedAt: serverTimestamp()
+                });
+            }
+
+            await batch.commit();
+
+            showNotification('success', "تم تعديل الرصيد وتحديث السجلات بنجاح");
             setIsStockModalOpen(false);
             setEditingStockItem(null);
             setNewStockValue('');
