@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import DashboardLayout from '../../layouts/DashboardLayout';
-import { collection, query, where, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, setDoc, orderBy, Timestamp , writeBatch} from "firebase/firestore";
+import { collection, query, where, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, setDoc, orderBy, Timestamp, writeBatch } from "firebase/firestore";
 import { db } from '../../config/firebase';
 
 // Helper: Calculate Remaining Stock
@@ -80,7 +80,7 @@ const AdminDashboard = () => {
         isSales: false,
         deductFromProduct: '',
         deductAmount: 1,
-        targetBranch: 'current' // 'current' or 'both'
+        showOn: ['*']
     });
 
     // ... (unchanged code)
@@ -429,7 +429,7 @@ const AdminDashboard = () => {
                 isSales: product.isSales || false,
                 deductFromProduct: product.deductFromProduct || '',
                 deductAmount: product.deductAmount || 1,
-                targetBranch: 'current'
+                showOn: product.showOn || (product.city ? [] : ['*']) // Default to * if no specific data, or based on legacy
             });
         } else {
             setEditingProduct(null);
@@ -442,7 +442,7 @@ const AdminDashboard = () => {
                 isSales: false,
                 deductFromProduct: '',
                 deductAmount: 1,
-                targetBranch: 'current'
+                showOn: ['*'] // Default to All
             });
         }
         setIsModalOpen(true);
@@ -477,6 +477,12 @@ const AdminDashboard = () => {
             return;
         }
 
+        if (formData.showOn.length === 0) {
+            showNotification('error', "الرجاء تحديد خيار العرض (الكل أو فروع محددة)");
+            setIsSubmitting(false);
+            return;
+        }
+
         setIsSubmitting(true);
         try {
             // Base Data
@@ -490,73 +496,93 @@ const AdminDashboard = () => {
                 isSales: formData.isSales || false,
                 deductFromProduct: formData.deductFromProduct || null,
                 deductAmount: formData.deductFromProduct ? (Number(formData.deductAmount) || 1) : 1,
+                showOn: formData.showOn,
                 updatedAt: serverTimestamp()
             };
 
-            // Helper to update local state and cache
-            const updateLocalData = (newList) => {
-                const sortedList = newList.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
-                setProducts(sortedList);
+            // Determine Target Cities
+            // If showOn is ['*'], we target ALL cities (Ryad + Other) effectively global
+            // If showOn is specific IDs, we target ONLY the current selectedCity (Local)
 
-                // Update Cache immediately
-                const cacheKey = `products_${selectedCity}_${selectedOrderType}`;
-                localStorage.setItem(cacheKey, JSON.stringify({
-                    items: sortedList,
-                    lastSync: Date.now()
-                }));
-            };
-
-            if (editingProduct) {
-                // UPDATE (Single product only)
-                const docRef = doc(db, "products", editingProduct.id);
-                // Ensure we don't accidentally change city during edit logic unless intended (here we stick to current)
-                const updateData = { ...baseData, city: selectedCity };
-
-                await updateDoc(docRef, updateData);
-
-                // Update local state & Cache
-                const newList = products.map(p => p.id === editingProduct.id ? { ...p, ...updateData } : p);
-                updateLocalData(newList);
-
-                showNotification('success', "تم تحديث المنتج بنجاح");
-                await triggerUpdate(selectedCity, selectedOrderType);
-
+            let cities = [];
+            if (formData.showOn.includes('*')) {
+                cities = ['ryad', 'other'];
             } else {
-                // CREATE (Check for Both Branches)
-                if (formData.targetBranch === 'both') {
-                    const citiesToCreate = ['ryad', 'other'];
-
-                    for (const city of citiesToCreate) {
-                        const newDocData = { ...baseData, city, createdAt: serverTimestamp() };
-                        await addDoc(collection(db, "products"), newDocData);
-                        await triggerUpdate(city, selectedOrderType);
-
-                        // If we just added to the OTHER city, we should technically clear its cache so it refetches next time
-                        if (city !== selectedCity) {
-                            const otherKey = `products_${city}_${selectedOrderType}`;
-                            localStorage.removeItem(otherKey); // Force refetch for other branch
-                        }
-                    }
-
-                    // For Current Branch
-                    const matchesCurrent = { ...baseData, city: selectedCity, createdAt: new Date() }; // Mock obj for UI
-                    const newList = [...products, matchesCurrent];
-                    updateLocalData(newList);
-
-                    showNotification('success', "تم إضافة المنتج للفرعين بنجاح");
-
-                } else {
-                    // CREATE (Single Branch)
-                    const newDocData = { ...baseData, city: selectedCity, createdAt: serverTimestamp() };
-                    const docRef = await addDoc(collection(db, "products"), newDocData);
-
-                    const newList = [...products, { id: docRef.id, ...newDocData }];
-                    updateLocalData(newList);
-
-                    await triggerUpdate(selectedCity, selectedOrderType);
-                    showNotification('success', "تم إضافة المنتج بنجاح");
-                }
+                cities = [selectedCity];
             }
+
+            /* 
+               If Editing: We search by the OLD name (editingProduct.name) to find matches in other branches.
+               If Adding: We search by the NEW name (formData.name) to avoid duplicates.
+            */
+            const searchName = editingProduct ? editingProduct.name : formData.name;
+            let newLocalList = [...products];
+
+            // Iterate over selected cities
+            for (const city of cities) {
+                let docRef = null;
+
+                // 1. Determine Target Document Reference
+                if (editingProduct && city === editingProduct.city) {
+                    // This is the main document we are editing
+                    docRef = doc(db, "products", editingProduct.id);
+                } else {
+                    // Search for matching product in this city
+                    const q = query(collection(db, "products"),
+                        where("name", "==", searchName),
+                        where("typeId", "==", selectedOrderType),
+                        where("city", "==", city)
+                    );
+                    const snap = await getDocs(q);
+                    if (!snap.empty) {
+                        docRef = snap.docs[0].ref;
+                    }
+                }
+
+                // 2. Payload Preparation
+                const payload = { ...baseData, city };
+
+                // 3. Upsert (Update or Create)
+                if (docRef) {
+                    // UPDATE
+                    await updateDoc(docRef, payload);
+
+                    // Update local state if this is the current view's city
+                    if (city === selectedCity) {
+                        newLocalList = newLocalList.map(p => p.id === docRef.id ? { ...p, ...payload, id: docRef.id } : p);
+                    }
+                } else {
+                    // CREATE
+                    const createPayload = { ...payload, createdAt: serverTimestamp() };
+                    const res = await addDoc(collection(db, "products"), createPayload);
+
+                    // Update local state if this is the current view's city
+                    if (city === selectedCity) {
+                        // Optimistic add
+                        newLocalList.push({
+                            id: res.id,
+                            ...payload,
+                            createdAt: { seconds: Date.now() / 1000 } // Mock timestamp
+                        });
+                    }
+                }
+
+                // Trigger update signal for this city/type
+                await triggerUpdate(city, selectedOrderType);
+            }
+
+            // Finalize Local State
+            const sortedList = newLocalList.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+            setProducts(sortedList);
+
+            const cacheKey = `products_${selectedCity}_${selectedOrderType}`;
+            localStorage.setItem(cacheKey, JSON.stringify({
+                items: sortedList,
+                lastSync: Date.now()
+            }));
+
+            showNotification('success', editingProduct ? "تم تحديث المنتج والفروع المحددة" : "تم إضافة المنتج للفروع المحددة");
+
 
             handleCloseModal();
         } catch (error) {
@@ -1397,7 +1423,7 @@ const AdminDashboard = () => {
                                             }
                                         </select>
                                         <small style={{ color: 'hsl(var(--color-text-muted))', fontSize: '0.8rem', display: 'block', marginTop: '0.25rem' }}>
-                                            عند بيع هذا المنتج، سيتم خصم الكمية من رصيد المنتج المختار هنا.
+                                            عند بيع هذا المنتج، سيتم خصم الكمية من رصيد المنتج المختار هنا. (يعمل فقط على نفس الفرع)
                                         </small>
                                     </div>
 
@@ -1427,37 +1453,68 @@ const AdminDashboard = () => {
                                         </div>
                                     )}
 
-                                    {!editingProduct && (
-                                        <div style={{ marginTop: '2rem', backgroundColor: '#f0f9ff', padding: '1.25rem', borderRadius: '10px', border: '1px solid #bae6fd' }}>
-                                            <label style={{ display: 'block', marginBottom: '1rem', fontWeight: '700', color: '#0369a1', fontSize: '0.95rem' }}>
-                                                🏢 خيارات الإضافة للفروع
+                                    <div style={{ marginTop: '2rem', backgroundColor: '#f0f9ff', padding: '1.25rem', borderRadius: '10px', border: '1px solid #bae6fd' }}>
+                                        <div style={{ marginBottom: '1rem' }}>
+                                            <label style={{ display: 'block', fontWeight: '700', color: '#0369a1', fontSize: '0.95rem', marginBottom: '0.5rem' }}>
+                                                🏢 توفر المنتج في الفروع
                                             </label>
-                                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
-                                                    <input
-                                                        type="radio"
-                                                        name="targetBranch"
-                                                        value="current"
-                                                        checked={formData.targetBranch === 'current'}
-                                                        onChange={e => setFormData({ ...formData, targetBranch: e.target.value })}
-                                                        style={{ width: '1.1rem', height: '1.1rem' }}
-                                                    />
-                                                    <span style={{ color: '#334155' }}>إضافة للفرع الحالي فقط <strong>({selectedCity === 'ryad' ? 'الرياض' : 'خارج الرياض'})</strong></span>
-                                                </label>
-                                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
-                                                    <input
-                                                        type="radio"
-                                                        name="targetBranch"
-                                                        value="both"
-                                                        checked={formData.targetBranch === 'both'}
-                                                        onChange={e => setFormData({ ...formData, targetBranch: e.target.value })}
-                                                        style={{ width: '1.1rem', height: '1.1rem' }}
-                                                    />
-                                                    <span style={{ color: '#334155' }}>إضافة <strong>لكلا الفرعين</strong> في وقت واحد</span>
-                                                </label>
-                                            </div>
+
+                                            {/* All Branches Option */}
+                                            <label style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer', marginBottom: '1rem', fontWeight: 'bold' }}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={formData.showOn.includes('*')}
+                                                    onChange={e => {
+                                                        const checked = e.target.checked;
+                                                        if (checked) {
+                                                            setFormData({ ...formData, showOn: ['*'] });
+                                                        } else {
+                                                            setFormData({ ...formData, showOn: [] });
+                                                        }
+                                                    }}
+                                                    style={{ width: '1.2rem', height: '1.2rem', accentColor: '#0369a1' }}
+                                                />
+                                                <span style={{ color: '#0369a1' }}>كل الفروع (*)</span>
+                                            </label>
+
+                                            {/* Specific Branches List - Filtered by current City */}
+                                            {!formData.showOn.includes('*') && (
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', paddingRight: '1.5rem', borderRight: '2px solid #e2e8f0' }}>
+                                                    <div style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '0.5rem' }}>
+                                                        اختر الفروع في مدينة <strong>{selectedCity === 'ryad' ? 'الرياض' : 'خارج الرياض'}</strong>:
+                                                    </div>
+                                                    {branches
+                                                        .filter(b => (!b.city && selectedCity === 'ryad') || b.city === selectedCity)
+                                                        .map(branch => (
+                                                            <label key={branch.id} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                                                                <input
+                                                                    type="checkbox"
+                                                                    value={branch.id}
+                                                                    checked={formData.showOn.includes(branch.id)}
+                                                                    onChange={e => {
+                                                                        const checked = e.target.checked;
+                                                                        setFormData(prev => {
+                                                                            const current = prev.showOn.filter(x => x !== '*');
+                                                                            const newTargets = checked
+                                                                                ? [...current, branch.id]
+                                                                                : current.filter(t => t !== branch.id);
+                                                                            return { ...prev, showOn: newTargets };
+                                                                        });
+                                                                    }}
+                                                                    style={{ width: '1.1rem', height: '1.1rem' }}
+                                                                />
+                                                                <span style={{ color: '#334155' }}>
+                                                                    {branch.name}
+                                                                </span>
+                                                            </label>
+                                                        ))}
+                                                    {branches.filter(b => (!b.city && selectedCity === 'ryad') || b.city === selectedCity).length === 0 && (
+                                                        <div style={{ color: '#ef4444', fontSize: '0.9rem' }}>لا توجد فروع مضافة لهذه المدينة بعد.</div>
+                                                    )}
+                                                </div>
+                                            )}
                                         </div>
-                                    )}
+                                    </div>
                                 </div>
                             </div>
 
