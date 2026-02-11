@@ -427,8 +427,10 @@ const AdminDashboard = () => {
                 parentProduct: product.parentProduct || '',
                 sortOrder: product.sortOrder || 0,
                 isSales: product.isSales || false,
-                deductFromProduct: product.deductFromProduct || '',
-                deductAmount: product.deductAmount || 1,
+                deductions: product.deductions ||
+                    (product.deductFromProduct
+                        ? [{ productId: product.deductFromProduct, amount: product.deductAmount || 1 }]
+                        : []),
                 showOn: product.showOn || (product.city ? [] : ['*']) // Default to * if no specific data, or based on legacy
             });
         } else {
@@ -440,8 +442,7 @@ const AdminDashboard = () => {
                 parentProduct: '',
                 sortOrder: 0,
                 isSales: false,
-                deductFromProduct: '',
-                deductAmount: 1,
+                deductions: [],
                 showOn: ['*'] // Default to All
             });
         }
@@ -494,8 +495,7 @@ const AdminDashboard = () => {
                 parentProduct: formData.parentProduct || null,
                 sortOrder: Number(formData.sortOrder) || 0,
                 isSales: formData.isSales || false,
-                deductFromProduct: formData.deductFromProduct || null,
-                deductAmount: formData.deductFromProduct ? (Number(formData.deductAmount) || 1) : 1,
+                deductions: formData.deductions ? formData.deductions.filter(d => d.productId && d.amount > 0) : [],
                 showOn: formData.showOn,
                 updatedAt: serverTimestamp()
             };
@@ -1406,52 +1406,90 @@ const AdminDashboard = () => {
                                         </select>
                                     </div>
 
-                                    <div className="input-group">
-                                        <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>خصم المخزون من</label>
-                                        <select
-                                            className="input-field"
-                                            value={formData.deductFromProduct || ''}
-                                            onChange={e => setFormData({ ...formData, deductFromProduct: e.target.value })}
-                                            style={{ backgroundColor: formData.deductFromProduct ? '#fff7ed' : '#fff' }}
-                                        >
-                                            <option value="">-- يخصم من نفس المنتج --</option>
-                                            {products
-                                                .filter(p => p.id !== (editingProduct?.id))
-                                                .map(p => (
-                                                    <option key={p.id} value={p.id}>{p.name}</option>
-                                                ))
-                                            }
-                                        </select>
-                                        <small style={{ color: 'hsl(var(--color-text-muted))', fontSize: '0.8rem', display: 'block', marginTop: '0.25rem' }}>
-                                            عند بيع هذا المنتج، سيتم خصم الكمية من رصيد المنتج المختار هنا. (يعمل فقط على نفس الفرع)
+                                    {/* Deductions / Ingredients Section */}
+                                    <div style={{ marginBottom: '1rem', border: '1px solid #e2e8f0', padding: '1rem', borderRadius: '8px', backgroundColor: '#fff7ed' }}>
+                                        <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500', color: '#c2410c' }}>
+                                            خصم من المخزون (المكونات)
+                                        </label>
+                                        <small style={{ display: 'block', marginBottom: '1rem', color: '#9a3412', fontSize: '13px' }}>
+                                            يمكنك تحديد أكثر من منتج ليتم خصمهم عند بيع هذا الصنف. (يعمل فقط على نفس الفرع)
                                         </small>
-                                    </div>
 
-                                    {/* Conditional Deduct Amount */}
-                                    {formData.deductFromProduct && (
-                                        <div className="input-group" style={{
-                                            marginRight: '1rem', borderRight: '2px solid #fdba74', paddingRight: '1rem',
-                                            animation: 'fadeIn 0.3s ease-in-out'
-                                        }}>
-                                            <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500', color: '#c2410c' }}>
-                                                كمية الخصم
-                                            </label>
-                                            <input
-                                                type="number"
-                                                className="input-field"
-                                                value={formData.deductAmount}
-                                                onChange={e => setFormData({ ...formData, deductAmount: e.target.value })}
-                                                step="any"
-                                                min="0"
-                                                placeholder="1"
-                                                style={{ borderColor: '#fdba74', backgroundColor: '#fff7ed' }}
-                                            />
-                                            <small style={{ color: '#ea580c', fontSize: '0.8rem' }}>
-                                                مقدار ما يتم خصمه من المنتج الأصلي عند بيع حبة واحدة من هذا المنتج.
-                                            </small>
-                                            <style>{`@keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }`}</style>
-                                        </div>
-                                    )}
+                                        {formData.deductions && formData.deductions.map((deduction, idx) => (
+                                            <div key={idx} style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem', alignItems: 'flex-start' }}>
+                                                <div style={{ flex: 2 }}>
+                                                    <select
+                                                        className="input-field"
+                                                        value={deduction.productId}
+                                                        onChange={e => {
+                                                            const newDeductions = [...formData.deductions];
+                                                            newDeductions[idx] = { ...newDeductions[idx], productId: e.target.value };
+                                                            setFormData({ ...formData, deductions: newDeductions });
+                                                        }}
+                                                        style={{ backgroundColor: '#fff', fontSize: '13px' }}
+                                                    >
+                                                        <option value="">-- اختر المنتج --</option>
+                                                        {products
+                                                            .filter(p => p.id !== (editingProduct?.id))
+                                                            .map(p => (
+                                                                <option key={p.id} value={p.id}>{p.name}</option>
+                                                            ))
+                                                        }
+                                                    </select>
+                                                </div>
+                                                <div style={{ flex: 1 }}>
+                                                    <input
+                                                        type="number"
+                                                        className="input-field"
+                                                        value={deduction.amount}
+                                                        onChange={e => {
+                                                            const newDeductions = [...formData.deductions];
+                                                            newDeductions[idx] = { ...newDeductions[idx], amount: e.target.value };
+                                                            setFormData({ ...formData, deductions: newDeductions });
+                                                        }}
+                                                        placeholder="الكمية"
+                                                        step="any"
+                                                        min="0"
+                                                        style={{ backgroundColor: '#fff', fontSize: '13px' }}
+                                                    />
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        const newDeductions = formData.deductions.filter((_, i) => i !== idx);
+                                                        setFormData({ ...formData, deductions: newDeductions });
+                                                    }}
+                                                    style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#ef4444', marginTop: '8px' }}
+                                                    title="حذف"
+                                                >
+                                                    ❌
+                                                </button>
+                                            </div>
+                                        ))}
+
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setFormData({
+                                                    ...formData,
+                                                    deductions: [...(formData.deductions || []), { productId: '', amount: 1 }]
+                                                });
+                                            }}
+                                            style={{
+                                                marginTop: '0.5rem',
+                                                border: '1px dashed #fdba74',
+                                                backgroundColor: '#fff',
+                                                color: '#c2410c',
+                                                width: '100%',
+                                                padding: '0.5rem',
+                                                borderRadius: '6px',
+                                                cursor: 'pointer',
+                                                fontSize: '13px'
+                                            }}
+                                        >
+                                            + إضافة مكون آخر
+                                        </button>
+                                    </div>
 
                                     <div style={{ marginTop: '2rem', backgroundColor: '#f0f9ff', padding: '1.25rem', borderRadius: '10px', border: '1px solid #bae6fd' }}>
                                         <div style={{ marginBottom: '1rem' }}>
