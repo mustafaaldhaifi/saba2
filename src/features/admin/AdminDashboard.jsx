@@ -425,6 +425,11 @@ const AdminDashboard = () => {
             setEditingProduct(product);
             const currentLinkId = product.linkId || '';
 
+            // Initialize status with current product's city to avoid showing it as missing
+            const initialStatus = {};
+            if (product.city) initialStatus[product.city] = true;
+            setLinkStatus(initialStatus);
+
             setFormData({
                 name: product.name || '',
                 unit: product.unit || '',
@@ -437,10 +442,10 @@ const AdminDashboard = () => {
                 linkId: currentLinkId
             });
 
-            // 1. Check link status (same linkId)
+            // 1. Check link status (same linkId) across other cities
             if (currentLinkId) {
                 try {
-                    const status = {};
+                    const status = { ...initialStatus };
                     const q = query(collection(db, "products"), where("linkId", "==", currentLinkId));
                     const snap = await getDocs(q);
                     snap.forEach(d => {
@@ -462,7 +467,7 @@ const AdminDashboard = () => {
                 const snapMatch = await getDocs(qMatch);
                 const matches = snapMatch.docs
                     .map(d => ({ id: d.id, ...d.data() }))
-                    .filter(m => m.id !== product.id && m.linkId !== currentLinkId);
+                    .filter(m => m.id !== product.id && m.linkId !== currentLinkId && m.city !== product.city);
 
                 setPotentialMatches(matches);
             } catch (e) {
@@ -519,6 +524,56 @@ const AdminDashboard = () => {
         } catch (error) {
             console.error("Manual Link Error:", error);
             showNotification('error', "فشل في عملية الربط اليدوي");
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+
+    const handleSyncToOtherCity = async (targetCity) => {
+        if (!editingProduct) return;
+
+        const confirmMsg = `هل تريد إنشاء نسخة من هذا المنتج في فرع ${targetCity === 'ryad' ? 'الرياض' : 'خارج الرياض'} وربطهما معاً؟ سيتم نسخ جميع التفاصيل (الاسم، الوحدات، الخصم)`;
+        if (!window.confirm(confirmMsg)) return;
+
+        setIsSubmitting(true);
+        try {
+            const currentLinkId = editingProduct.linkId || doc(collection(db, "products")).id;
+
+            // 1. Ensure current product has the linkId
+            if (!editingProduct.linkId) {
+                await updateDoc(doc(db, "products", editingProduct.id), {
+                    linkId: currentLinkId,
+                    updatedAt: serverTimestamp()
+                });
+            }
+
+            // 2. Prepare Payload
+            const payload = {
+                name: formData.name,
+                unit: formData.unit,
+                unitF: formData.unitF,
+                typeId: editingProduct.typeId,
+                parentProduct: formData.parentProduct || null,
+                sortOrder: Number(formData.sortOrder) || 0,
+                isSales: formData.isSales || false,
+                deductions: formData.deductions ? formData.deductions.filter(d => d.productId && d.amount > 0) : [],
+                showOn: formData.showOn,
+                linkId: currentLinkId,
+                city: targetCity,
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp()
+            };
+
+            await addDoc(collection(db, "products"), payload);
+            await triggerUpdate(targetCity, editingProduct.typeId);
+
+            showNotification('success', "تم إنشاء وربط المنتج بالفرع الآخر بنجاح");
+
+            // Refresh modal state
+            handleOpenModal({ ...editingProduct, linkId: currentLinkId });
+        } catch (error) {
+            console.error("Sync Error:", error);
+            showNotification('error', "فشل في عملية المزامنة للفرع الآخر");
         } finally {
             setIsSubmitting(false);
         }
@@ -1501,6 +1556,8 @@ const AdminDashboard = () => {
                                             <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
                                                 {['ryad', 'other'].map(cityCode => {
                                                     const exists = linkStatus[cityCode];
+                                                    const cityMatches = potentialMatches.filter(m => m.city === cityCode);
+
                                                     return (
                                                         <span key={cityCode} style={{
                                                             fontSize: '11px', padding: '2px 8px', borderRadius: '12px',
@@ -1510,6 +1567,22 @@ const AdminDashboard = () => {
                                                             display: 'flex', alignItems: 'center', gap: '4px'
                                                         }}>
                                                             {exists ? '✅' : '❌'} {cityCode === 'ryad' ? 'الرياض' : 'خارج الرياض'}
+
+                                                            {!exists && cityMatches.length === 0 && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleSyncToOtherCity(cityCode)}
+                                                                    style={{
+                                                                        marginLeft: '4px', border: 'none', background: '#991b1b',
+                                                                        color: 'white', borderRadius: '50%', width: '14px',
+                                                                        height: '14px', fontSize: '10px', cursor: 'pointer',
+                                                                        display: 'flex', alignItems: 'center', justifyContent: 'center'
+                                                                    }}
+                                                                    title="إنشاء نسخة مربوطة في هذا الفرع"
+                                                                >
+                                                                    +
+                                                                </button>
+                                                            )}
                                                         </span>
                                                     );
                                                 })}
