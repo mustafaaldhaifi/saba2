@@ -67,6 +67,8 @@ const AdminDashboard = () => {
     const [branches, setBranches] = useState([]); // Dynamic
     const [products, setProducts] = useState([]);
     const [loadingProducts, setLoadingProducts] = useState(false);
+    const [linkStatus, setLinkStatus] = useState({}); // { ryad: true, other: false }
+    const [potentialMatches, setPotentialMatches] = useState([]); // Products with same name but no linkId/different linkId
 
     // Modal / Form
     const [isModalOpen, setIsModalOpen] = useState(false);
@@ -78,9 +80,9 @@ const AdminDashboard = () => {
         parentProduct: '',
         sortOrder: 0,
         isSales: false,
-        deductFromProduct: '',
-        deductAmount: 1,
-        showOn: ['*']
+        deductions: [],
+        showOn: ['*'],
+        linkId: ''
     });
 
     // ... (unchanged code)
@@ -416,10 +418,13 @@ const AdminDashboard = () => {
     }, [selectedReportDate, selectedBranch, selectedOrderType, reportDates]);
 
 
-    // Handlers
-    const handleOpenModal = (product = null) => {
+    const handleOpenModal = async (product = null) => {
+        setLinkStatus({});
+        setPotentialMatches([]); // Reset
         if (product) {
             setEditingProduct(product);
+            const currentLinkId = product.linkId || '';
+
             setFormData({
                 name: product.name || '',
                 unit: product.unit || '',
@@ -427,12 +432,43 @@ const AdminDashboard = () => {
                 parentProduct: product.parentProduct || '',
                 sortOrder: product.sortOrder || 0,
                 isSales: product.isSales || false,
-                deductions: product.deductions ||
-                    (product.deductFromProduct
-                        ? [{ productId: product.deductFromProduct, amount: product.deductAmount || 1 }]
-                        : []),
-                showOn: product.showOn || (product.city ? [] : ['*']) // Default to * if no specific data, or based on legacy
+                deductions: product.deductions || [],
+                showOn: product.showOn || (product.city ? [] : ['*']), // Default to * if no specific data, or based on legacy
+                linkId: currentLinkId
             });
+
+            // 1. Check link status (same linkId)
+            if (currentLinkId) {
+                try {
+                    const status = {};
+                    const q = query(collection(db, "products"), where("linkId", "==", currentLinkId));
+                    const snap = await getDocs(q);
+                    snap.forEach(d => {
+                        const data = d.data();
+                        if (data.city) status[data.city] = true;
+                    });
+                    setLinkStatus(status);
+                } catch (e) {
+                    console.error("Error fetching link status:", e);
+                }
+            }
+
+            // 2. Search for potential matches by Name + Type in other cities (different linkId)
+            try {
+                const qMatch = query(collection(db, "products"),
+                    where("name", "==", product.name),
+                    where("typeId", "==", product.typeId)
+                );
+                const snapMatch = await getDocs(qMatch);
+                const matches = snapMatch.docs
+                    .map(d => ({ id: d.id, ...d.data() }))
+                    .filter(m => m.id !== product.id && m.linkId !== currentLinkId);
+
+                setPotentialMatches(matches);
+            } catch (e) {
+                console.error("Error fetching potential matches:", e);
+            }
+
         } else {
             setEditingProduct(null);
             setFormData({
@@ -443,10 +479,49 @@ const AdminDashboard = () => {
                 sortOrder: 0,
                 isSales: false,
                 deductions: [],
-                showOn: ['*'] // Default to All
+                showOn: ['*'], // Default to All
+                linkId: doc(collection(db, "products")).id // Pre-generate a linkId for new products
             });
         }
         setIsModalOpen(true);
+    };
+
+    const handleManualLink = async () => {
+        if (!editingProduct || potentialMatches.length === 0) return;
+
+        const confirmMsg = `تم العثور على ${potentialMatches.length} نتائج مطابقة لاسم المنتج في فروع أخرى. هل تريد ربط هذه المنتجات معاً ليكون لها نفس الرابط الموحد؟`;
+        if (!window.confirm(confirmMsg)) return;
+
+        setIsSubmitting(true);
+        try {
+            const batch = writeBatch(db);
+            const commonLinkId = editingProduct.linkId || doc(collection(db, "products")).id;
+
+            // Update current product
+            batch.update(doc(db, "products", editingProduct.id), {
+                linkId: commonLinkId,
+                updatedAt: serverTimestamp()
+            });
+
+            // Update all matches
+            potentialMatches.forEach(m => {
+                batch.update(doc(db, "products", m.id), {
+                    linkId: commonLinkId,
+                    updatedAt: serverTimestamp()
+                });
+            });
+
+            await batch.commit();
+            showNotification('success', "تم ربط المنتجات بنجاح");
+
+            // Refresh modal state
+            handleOpenModal({ ...editingProduct, linkId: commonLinkId });
+        } catch (error) {
+            console.error("Manual Link Error:", error);
+            showNotification('error', "فشل في عملية الربط اليدوي");
+        } finally {
+            setIsSubmitting(false);
+        }
     };
 
     const handleCloseModal = () => {
@@ -470,6 +545,79 @@ const AdminDashboard = () => {
         }
     };
 
+    const migrateExistingProducts = async () => {
+        if (!window.confirm("هل أنت متأكد من بدء عملية ربط المنتجات السابقة؟ هذه العملية ستحاول ربط المنتجات المتشابهة بالاسم في جميع الفروع لتسهيل المزامنة.")) return;
+
+        setIsSubmitting(true);
+        try {
+            const productsSnap = await getDocs(collection(db, "products"));
+            const allProducts = productsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+            // Group by [name + typeId]
+            const groups = {};
+            allProducts.forEach(product => {
+                const key = `${product.name}_${product.typeId}`;
+                if (!groups[key]) groups[key] = [];
+                groups[key].push(product);
+            });
+
+            let totalUpdated = 0;
+            let batch = writeBatch(db);
+            let batchCount = 0;
+
+            for (const group of Object.values(groups)) {
+                // Find existing linkId in group if any
+                let existingLinkId = null;
+                for (const p of group) {
+                    if (p.linkId) {
+                        existingLinkId = p.linkId;
+                        break;
+                    }
+                }
+
+                // Generate new linkId if none exists
+                const finalLinkId = existingLinkId || doc(collection(db, "products")).id;
+
+                // Mark all for update if they don't have this linkId
+                for (const p of group) {
+                    if (p.linkId !== finalLinkId) {
+                        batch.update(doc(db, "products", p.id), {
+                            linkId: finalLinkId,
+                            updatedAt: serverTimestamp()
+                        });
+                        batchCount++;
+                        totalUpdated++;
+
+                        // If batch is full, commit and start new one
+                        if (batchCount >= 450) {
+                            await batch.commit();
+                            batch = writeBatch(db);
+                            batchCount = 0;
+                        }
+                    }
+                }
+            }
+
+            if (batchCount > 0) {
+                await batch.commit();
+            }
+
+            if (totalUpdated > 0) {
+                showNotification('success', `تم ربط وتحديث ${totalUpdated} منتج بنجاح.`);
+                // Recommended: refresh or reload to see changes if currently in view
+                window.location.reload();
+            } else {
+                showNotification('error', "لم يتم العثور على منتجات تحتاج إلى ربط.");
+            }
+
+        } catch (error) {
+            console.error("Migration Error:", error);
+            showNotification('error', "فشل في عملية ربط المنتجات: " + error.message);
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+
     const handleSave = async (e) => {
         e.preventDefault();
 
@@ -486,6 +634,12 @@ const AdminDashboard = () => {
 
         setIsSubmitting(true);
         try {
+            // 1. Determine or Generate Link ID (Unique identifier across cities)
+            let linkId = formData.linkId;
+            if (!linkId) {
+                linkId = doc(collection(db, "products")).id;
+            }
+
             // Base Data
             const baseData = {
                 name: formData.name,
@@ -497,13 +651,11 @@ const AdminDashboard = () => {
                 isSales: formData.isSales || false,
                 deductions: formData.deductions ? formData.deductions.filter(d => d.productId && d.amount > 0) : [],
                 showOn: formData.showOn,
+                linkId: linkId, // Crucial: Always include the linkId
                 updatedAt: serverTimestamp()
             };
 
             // Determine Target Cities
-            // If showOn is ['*'], we target ALL cities (Ryad + Other) effectively global
-            // If showOn is specific IDs, we target ONLY the current selectedCity (Local)
-
             let cities = [];
             if (formData.showOn.includes('*')) {
                 cities = ['ryad', 'other'];
@@ -511,10 +663,6 @@ const AdminDashboard = () => {
                 cities = [selectedCity];
             }
 
-            /* 
-               If Editing: We search by the OLD name (editingProduct.name) to find matches in other branches.
-               If Adding: We search by the NEW name (formData.name) to avoid duplicates.
-            */
             const searchName = editingProduct ? editingProduct.name : formData.name;
             let newLocalList = [...products];
 
@@ -523,19 +671,30 @@ const AdminDashboard = () => {
                 let docRef = null;
 
                 // 1. Determine Target Document Reference
+                // Strategy: Search by linkId first, fallback to name for legacy data conversion
                 if (editingProduct && city === editingProduct.city) {
-                    // This is the main document we are editing
                     docRef = doc(db, "products", editingProduct.id);
                 } else {
-                    // Search for matching product in this city
-                    const q = query(collection(db, "products"),
-                        where("name", "==", searchName),
-                        where("typeId", "==", selectedOrderType),
+                    // Try searching by linkId
+                    const qLink = query(collection(db, "products"),
+                        where("linkId", "==", linkId),
                         where("city", "==", city)
                     );
-                    const snap = await getDocs(q);
-                    if (!snap.empty) {
-                        docRef = snap.docs[0].ref;
+                    const snapLink = await getDocs(qLink);
+
+                    if (!snapLink.empty) {
+                        docRef = snapLink.docs[0].ref;
+                    } else {
+                        // Fallback: Search by name (for one-time linkId attachment)
+                        const qName = query(collection(db, "products"),
+                            where("name", "==", searchName),
+                            where("typeId", "==", selectedOrderType),
+                            where("city", "==", city)
+                        );
+                        const snapName = await getDocs(qName);
+                        if (!snapName.empty) {
+                            docRef = snapName.docs[0].ref;
+                        }
                     }
                 }
 
@@ -547,7 +706,6 @@ const AdminDashboard = () => {
                     // UPDATE
                     await updateDoc(docRef, payload);
 
-                    // Update local state if this is the current view's city
                     if (city === selectedCity) {
                         newLocalList = newLocalList.map(p => p.id === docRef.id ? { ...p, ...payload, id: docRef.id } : p);
                     }
@@ -556,18 +714,15 @@ const AdminDashboard = () => {
                     const createPayload = { ...payload, createdAt: serverTimestamp() };
                     const res = await addDoc(collection(db, "products"), createPayload);
 
-                    // Update local state if this is the current view's city
                     if (city === selectedCity) {
-                        // Optimistic add
                         newLocalList.push({
                             id: res.id,
                             ...payload,
-                            createdAt: { seconds: Date.now() / 1000 } // Mock timestamp
+                            createdAt: { seconds: Date.now() / 1000 }
                         });
                     }
                 }
 
-                // Trigger update signal for this city/type
                 await triggerUpdate(city, selectedOrderType);
             }
 
@@ -582,8 +737,6 @@ const AdminDashboard = () => {
             }));
 
             showNotification('success', editingProduct ? "تم تحديث المنتج والفروع المحددة" : "تم إضافة المنتج للفروع المحددة");
-
-
             handleCloseModal();
         } catch (error) {
             console.error("Error saving product:", error);
@@ -932,18 +1085,28 @@ const AdminDashboard = () => {
             </div>
 
             {/* Products Action Bar */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
                 <h2 style={{ fontSize: '1.5rem', color: 'hsl(var(--color-primary))', fontWeight: '700' }}>
                     قائمة المنتجات ({products.length})
                 </h2>
-                <button
-                    className="btn btn-primary"
-                    onClick={() => handleOpenModal()}
-                    disabled={!selectedOrderType}
-                    title={!selectedOrderType ? "اختر نوع الطلبية أولاً" : ""}
-                >
-                    + إضافة منتج جديد
-                </button>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                        className="btn btn-secondary"
+                        onClick={migrateExistingProducts}
+                        title="ربط المنتجات القديمة التي تحمل نفس الاسم في الرياض وخارج الرياض"
+                        disabled={isSubmitting}
+                    >
+                        🔗 ربط المنتجات القديمة
+                    </button>
+                    <button
+                        className="btn btn-primary"
+                        onClick={() => handleOpenModal()}
+                        disabled={!selectedOrderType}
+                        title={!selectedOrderType ? "اختر نوع الطلبية أولاً" : ""}
+                    >
+                        + إضافة منتج جديد
+                    </button>
+                </div>
             </div>
 
             {/* Products Table */}
@@ -1315,15 +1478,57 @@ const AdminDashboard = () => {
 
                                     <div className="input-group">
                                         <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>اسم المنتج <span style={{ color: 'red' }}>*</span></label>
-                                        <input
-                                            type="text"
-                                            className="input-field"
-                                            value={formData.name}
-                                            onChange={e => setFormData({ ...formData, name: e.target.value })}
-                                            required
-                                            placeholder="أدخل اسم المنتج"
-                                            style={{ borderColor: formData.name ? '#e2e8f0' : '#fca5a5' }}
-                                        />
+                                        <div style={{ position: 'relative' }}>
+                                            <input
+                                                type="text"
+                                                className="input-field"
+                                                value={formData.name}
+                                                onChange={e => setFormData({ ...formData, name: e.target.value })}
+                                                required
+                                                placeholder="أدخل اسم المنتج"
+                                                style={{ borderColor: formData.name ? '#e2e8f0' : '#fca5a5', paddingLeft: '40px' }}
+                                            />
+                                            {editingProduct && (
+                                                <div style={{
+                                                    position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)',
+                                                    fontSize: '18px', cursor: 'help'
+                                                }} title={Object.keys(linkStatus).length > 1 ? "هذا المنتج مربوط مع فروع أخرى" : "هذا المنتج غير مربوط مع فروع أخرى"}>
+                                                    {Object.keys(linkStatus).length > 1 ? '🔗' : '⚠️'}
+                                                </div>
+                                            )}
+                                        </div>
+                                        {editingProduct && (
+                                            <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                                                {['ryad', 'other'].map(cityCode => {
+                                                    const exists = linkStatus[cityCode];
+                                                    return (
+                                                        <span key={cityCode} style={{
+                                                            fontSize: '11px', padding: '2px 8px', borderRadius: '12px',
+                                                            backgroundColor: exists ? '#dcfce7' : '#fee2e2',
+                                                            color: exists ? '#166534' : '#991b1b',
+                                                            border: `1px solid ${exists ? '#bbf7d0' : '#fecaca'}`,
+                                                            display: 'flex', alignItems: 'center', gap: '4px'
+                                                        }}>
+                                                            {exists ? '✅' : '❌'} {cityCode === 'ryad' ? 'الرياض' : 'خارج الرياض'}
+                                                        </span>
+                                                    );
+                                                })}
+
+                                                {potentialMatches.length > 0 && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={handleManualLink}
+                                                        style={{
+                                                            fontSize: '11px', padding: '2px 10px', borderRadius: '6px',
+                                                            backgroundColor: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe',
+                                                            cursor: 'pointer', fontWeight: '600'
+                                                        }}
+                                                    >
+                                                        🔗 ربط مع {potentialMatches.length} تطابق بالاسم
+                                                    </button>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
 
                                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
