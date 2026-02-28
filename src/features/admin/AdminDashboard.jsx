@@ -681,12 +681,6 @@ const AdminDashboard = () => {
             return;
         }
 
-        if (formData.showOn.length === 0) {
-            showNotification('error', "الرجاء تحديد خيار العرض (الكل أو فروع محددة)");
-            setIsSubmitting(false);
-            return;
-        }
-
         setIsSubmitting(true);
         try {
             // 1. Determine or Generate Link ID (Unique identifier across cities)
