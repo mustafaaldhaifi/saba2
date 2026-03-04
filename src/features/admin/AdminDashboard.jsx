@@ -704,76 +704,46 @@ const AdminDashboard = () => {
                 updatedAt: serverTimestamp()
             };
 
-            // Determine Target Cities
-            let cities = [];
-            if (formData.showOn.includes('*')) {
-                cities = ['ryad', 'other'];
-            } else {
-                cities = [selectedCity];
-            }
+            // Determine Target City
+            const targetCity = editingProduct ? editingProduct.city : selectedCity;
 
-            const searchName = editingProduct ? editingProduct.name : formData.name;
+            let docRef = null;
+
+            // 1. Determine Target Document Reference
+            if (editingProduct) {
+                // UPDATE: Use the exact document ID
+                docRef = doc(db, "products", editingProduct.id);
+            }
+            // If adding new, we leave docRef as null so it creates a new document.
+            // We NO LONGER search by name to avoid overwriting existing items when adding new ones.
+
+            // 2. Payload Preparation
+            const payload = { ...baseData, city: targetCity };
             let newLocalList = [...products];
 
-            // Iterate over selected cities
-            for (const city of cities) {
-                let docRef = null;
+            // 3. Upsert (Update or Create)
+            if (docRef) {
+                // UPDATE
+                await updateDoc(docRef, payload);
 
-                // 1. Determine Target Document Reference
-                // Strategy: Search by linkId first, fallback to name for legacy data conversion
-                if (editingProduct && city === editingProduct.city) {
-                    docRef = doc(db, "products", editingProduct.id);
-                } else {
-                    // Try searching by linkId
-                    const qLink = query(collection(db, "products"),
-                        where("linkId", "==", linkId),
-                        where("city", "==", city)
-                    );
-                    const snapLink = await getDocs(qLink);
-
-                    if (!snapLink.empty) {
-                        docRef = snapLink.docs[0].ref;
-                    } else {
-                        // Fallback: Search by name (for one-time linkId attachment)
-                        const qName = query(collection(db, "products"),
-                            where("name", "==", searchName),
-                            where("typeId", "==", selectedOrderType),
-                            where("city", "==", city)
-                        );
-                        const snapName = await getDocs(qName);
-                        if (!snapName.empty) {
-                            docRef = snapName.docs[0].ref;
-                        }
-                    }
+                if (targetCity === selectedCity) {
+                    newLocalList = newLocalList.map(p => p.id === docRef.id ? { ...p, ...payload, id: docRef.id } : p);
                 }
+            } else {
+                // CREATE
+                const createPayload = { ...payload, createdAt: serverTimestamp() };
+                const res = await addDoc(collection(db, "products"), createPayload);
 
-                // 2. Payload Preparation
-                const payload = { ...baseData, city };
-
-                // 3. Upsert (Update or Create)
-                if (docRef) {
-                    // UPDATE
-                    await updateDoc(docRef, payload);
-
-                    if (city === selectedCity) {
-                        newLocalList = newLocalList.map(p => p.id === docRef.id ? { ...p, ...payload, id: docRef.id } : p);
-                    }
-                } else {
-                    // CREATE
-                    const createPayload = { ...payload, createdAt: serverTimestamp() };
-                    const res = await addDoc(collection(db, "products"), createPayload);
-
-                    if (city === selectedCity) {
-                        newLocalList.push({
-                            id: res.id,
-                            ...payload,
-                            createdAt: { seconds: Date.now() / 1000 }
-                        });
-                    }
+                if (targetCity === selectedCity) {
+                    newLocalList.push({
+                        id: res.id,
+                        ...payload,
+                        createdAt: { seconds: Date.now() / 1000 }
+                    });
                 }
-
-                await triggerUpdate(city, selectedOrderType);
             }
+
+            await triggerUpdate(targetCity, selectedOrderType);
 
             // Finalize Local State
             const sortedList = newLocalList.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
