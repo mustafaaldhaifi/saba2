@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import DashboardLayout from '../../layouts/DashboardLayout';
 import { collection, query, where, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, setDoc, orderBy, Timestamp, writeBatch } from "firebase/firestore";
 import { db } from '../../config/firebase';
+import MonthlyBranchReport from './MonthlyBranchReport';
 
 // Helper: Calculate Remaining Stock
 // Helper: Calculate Remaining Stock
@@ -61,6 +62,7 @@ const AdminDashboard = () => {
     const [reportDates, setReportDates] = useState([]); // Daily Report Dates
     const [selectedReportDate, setSelectedReportDate] = useState('');
     const [dailyReportData, setDailyReportData] = useState([]); // { productId: { ... } }
+    const [showMonthlyReport, setShowMonthlyReport] = useState(false);
 
     // Data
     const [orderTypes, setOrderTypes] = useState([]);
@@ -600,78 +602,7 @@ const AdminDashboard = () => {
         }
     };
 
-    const migrateExistingProducts = async () => {
-        if (!window.confirm("هل أنت متأكد من بدء عملية ربط المنتجات السابقة؟ هذه العملية ستحاول ربط المنتجات المتشابهة بالاسم في جميع الفروع لتسهيل المزامنة.")) return;
-
-        setIsSubmitting(true);
-        try {
-            const productsSnap = await getDocs(collection(db, "products"));
-            const allProducts = productsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
-            // Group by [name + typeId]
-            const groups = {};
-            allProducts.forEach(product => {
-                const key = `${product.name}_${product.typeId}`;
-                if (!groups[key]) groups[key] = [];
-                groups[key].push(product);
-            });
-
-            let totalUpdated = 0;
-            let batch = writeBatch(db);
-            let batchCount = 0;
-
-            for (const group of Object.values(groups)) {
-                // Find existing linkId in group if any
-                let existingLinkId = null;
-                for (const p of group) {
-                    if (p.linkId) {
-                        existingLinkId = p.linkId;
-                        break;
-                    }
-                }
-
-                // Generate new linkId if none exists
-                const finalLinkId = existingLinkId || doc(collection(db, "products")).id;
-
-                // Mark all for update if they don't have this linkId
-                for (const p of group) {
-                    if (p.linkId !== finalLinkId) {
-                        batch.update(doc(db, "products", p.id), {
-                            linkId: finalLinkId,
-                            updatedAt: serverTimestamp()
-                        });
-                        batchCount++;
-                        totalUpdated++;
-
-                        // If batch is full, commit and start new one
-                        if (batchCount >= 450) {
-                            await batch.commit();
-                            batch = writeBatch(db);
-                            batchCount = 0;
-                        }
-                    }
-                }
-            }
-
-            if (batchCount > 0) {
-                await batch.commit();
-            }
-
-            if (totalUpdated > 0) {
-                showNotification('success', `تم ربط وتحديث ${totalUpdated} منتج بنجاح.`);
-                // Recommended: refresh or reload to see changes if currently in view
-                window.location.reload();
-            } else {
-                showNotification('error', "لم يتم العثور على منتجات تحتاج إلى ربط.");
-            }
-
-        } catch (error) {
-            console.error("Migration Error:", error);
-            showNotification('error', "فشل في عملية ربط المنتجات: " + error.message);
-        } finally {
-            setIsSubmitting(false);
-        }
-    };
+  
 
     const handleSave = async (e) => {
         e.preventDefault();
@@ -1110,14 +1041,6 @@ const AdminDashboard = () => {
                 </h2>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                     <button
-                        className="btn btn-secondary"
-                        onClick={migrateExistingProducts}
-                        title="ربط المنتجات القديمة التي تحمل نفس الاسم في الرياض وخارج الرياض"
-                        disabled={isSubmitting}
-                    >
-                        🔗 ربط المنتجات القديمة
-                    </button>
-                    <button
                         className="btn btn-primary"
                         onClick={() => handleOpenModal()}
                         disabled={!selectedOrderType}
@@ -1125,8 +1048,35 @@ const AdminDashboard = () => {
                     >
                         + إضافة منتج جديد
                     </button>
+                    {selectedCity && selectedBranch && selectedOrderType === '5' && (
+                        <button
+                            className="btn"
+                            style={{
+                                backgroundColor: showMonthlyReport ? '#ef4444' : '#0284c7',
+                                color: 'white',
+                                border: 'none'
+                            }}
+                            onClick={() => setShowMonthlyReport(!showMonthlyReport)}
+                        >
+                            {showMonthlyReport ? 'إخفاء تقرير الشهر' : 'تقرير الشهر كامل'}
+                        </button>
+                    )}
                 </div>
             </div>
+
+            {/* Monthly Report View */}
+            {showMonthlyReport && selectedCity && selectedBranch && selectedOrderType === '5' && (
+                <div style={{ marginBottom: '2rem' }}>
+                    <MonthlyBranchReport
+                        branchId={selectedBranch}
+                        city={selectedCity}
+                        typeId={selectedOrderType}
+                        products={products}
+                        onClose={() => setShowMonthlyReport(false)}
+                        branchName={branches.find(b => b.id === selectedBranch)?.name || ''}
+                    />
+                </div>
+            )}
 
             {/* Products Table */}
             <div className="card">
