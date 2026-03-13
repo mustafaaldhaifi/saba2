@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { collection, query, where, getDocs } from "firebase/firestore";
 import { db } from '../../config/firebase';
+import * as XLSX from 'xlsx';
 
 const MonthlyBranchReport = ({ branchId, city, typeId, products, onClose, branchName }) => {
     const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().substring(0, 7)); // YYYY-MM
-    const [selectedField, setSelectedField] = useState('sales'); // Default to sales
+    const [selectedField, setSelectedField] = useState(''); // Default to empty
     const [monthlyData, setMonthlyData] = useState([]);
     const [loading, setLoading] = useState(false);
 
@@ -136,6 +137,33 @@ const MonthlyBranchReport = ({ branchId, city, typeId, products, onClose, branch
         });
     }
 
+    const handleExportExcel = () => {
+        const fieldLabel = fieldOptions.find(f => f.value === selectedField)?.label || selectedField;
+        const wsData = [];
+
+        // Header Row
+        const header = ["المنتج", ...days.map(d => `${d}`)];
+        wsData.push(header);
+
+        // Data Rows
+        displayProducts.forEach(prod => {
+            const name = prod._parentName ? `${prod._parentName} / ${prod.name}` : prod.name;
+            const row = [name];
+            days.forEach(day => {
+                const val = reportMap[prod.id]?.[day];
+                row.push(val === '-' ? 0 : val);
+            });
+            wsData.push(row);
+        });
+
+        const ws = XLSX.utils.aoa_to_sheet(wsData);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Report");
+
+        // Download
+        XLSX.writeFile(wb, `Report_${branchName}_${selectedMonth}_${fieldLabel}.xlsx`);
+    };
+
     return (
         <div className="card" style={{ marginTop: '1rem', padding: '1.5rem', border: '1px solid #e2e8f0' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
@@ -149,6 +177,13 @@ const MonthlyBranchReport = ({ branchId, city, typeId, products, onClose, branch
                 </div>
 
                 <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button
+                        onClick={handleExportExcel}
+                        className="btn"
+                        style={{ backgroundColor: '#10b981', color: 'white', border: 'none', display: 'flex', alignItems: 'center', gap: '5px' }}
+                    >
+                        <span>📊</span> تصدير Excel
+                    </button>
                     <div className="input-group" style={{ marginBottom: 0, width: 'auto' }}>
                         <label style={{ display: 'block', marginBottom: '2px', fontSize: '11px', color: '#64748b' }}>الشهر</label>
                         <input
@@ -168,6 +203,7 @@ const MonthlyBranchReport = ({ branchId, city, typeId, products, onClose, branch
                             onChange={(e) => setSelectedField(e.target.value)}
                             style={{ padding: '0.5rem', fontSize: '0.9rem', backgroundColor: '#fff' }}
                         >
+                            <option value="">-- اختر نوع البيانات --</option>
                             {fieldOptions.map(opt => (
                                 <option key={opt.value} value={opt.value}>{opt.label}</option>
                             ))}
@@ -184,7 +220,11 @@ const MonthlyBranchReport = ({ branchId, city, typeId, products, onClose, branch
                 </div>
             </div>
 
-            {loading ? (
+            {!selectedField ? (
+                <div style={{ textAlign: 'center', padding: '5rem', color: '#64748b', border: '1px dashed #e2e8f0', borderRadius: '8px' }}>
+                    <p style={{ fontSize: '1.1rem' }}>يرجى اختيار <strong>نوع البيانات</strong> من القائمة بالأعلى لعرض التقرير.</p>
+                </div>
+            ) : loading ? (
                 <div style={{ textAlign: 'center', padding: '3rem' }}>
                     <div style={{ width: '30px', height: '30px', border: '3px solid #f3f3f3', borderTop: '3px solid var(--color-primary)', borderRadius: '50%', animation: 'spin 1s linear infinite', margin: '0 auto 1rem' }}></div>
                     <p style={{ color: '#64748b' }}>جاري جلب البيانات من سجلات الشهر...</p>
