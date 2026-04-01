@@ -20,7 +20,8 @@ const MonthlyBranchReport = ({ branchId, city, typeId, products, onClose, branch
         { value: 'transfer', label: 'تحويل' },
         { value: 'directTransfer', label: 'تجهيز مباشر' },
         { value: 'freeIncrease', label: 'تعويض زبون' },
-
+        { value: 'closeStock', label: 'المتبقي' },
+        { value: 'all', label: 'الكل (تصدير كملفات منفصلة)' },
     ];
 
     useEffect(() => {
@@ -137,20 +138,78 @@ const MonthlyBranchReport = ({ branchId, city, typeId, products, onClose, branch
         });
     }
 
-    const handleExportExcel = () => {
-        const fieldLabel = fieldOptions.find(f => f.value === selectedField)?.label || selectedField;
-        const wsData = [];
+    const generateAndExportSingleField = (fieldValue, fieldLabel) => {
+        const tempReportMap = {};
 
-        // Header Row
+        monthlyData.forEach(prodDoc => {
+            const productId = prodDoc.productId;
+            if (!productId) return;
+
+            if (!tempReportMap[productId]) tempReportMap[productId] = {};
+
+            if (prodDoc.days) {
+                Object.keys(prodDoc.days).forEach(dayKey => {
+                    const dayNumber = parseInt(dayKey);
+                    if (!isNaN(dayNumber)) {
+                        const dayValues = prodDoc.days[dayKey];
+                        const val = dayValues[fieldValue];
+                        tempReportMap[productId][dayNumber] = (val !== undefined && val !== null) ? val : '-';
+                    }
+                });
+            }
+
+            Object.keys(prodDoc).forEach(key => {
+                if (key.startsWith('days.')) {
+                    const dayKey = key.split('.')[1];
+                    const dayNumber = parseInt(dayKey);
+
+                    if (!isNaN(dayNumber)) {
+                        const dayValues = prodDoc[key];
+                        const val = dayValues[fieldValue];
+                        if (tempReportMap[productId][dayNumber] === undefined || tempReportMap[productId][dayNumber] === '-') {
+                            tempReportMap[productId][dayNumber] = (val !== undefined && val !== null) ? val : '-';
+                        }
+                    }
+                }
+            });
+        });
+
+        const relevantProducts = products.filter(p => {
+            const isSalesItem = p.isSales === true || p.isSales === "true";
+            if (fieldValue === 'sales') return isSalesItem;
+            return !isSalesItem;
+        });
+
+        let tempDisplayProducts = [];
+        const roots = relevantProducts.filter(p => !p.parentProduct);
+        const getChildren = (parentId) => relevantProducts.filter(p => p.parentProduct === parentId);
+
+        if (fieldValue === 'sales') {
+            tempDisplayProducts = products;
+        } else if (['received', 'transfer', 'openingStock'].includes(fieldValue)) {
+            tempDisplayProducts = roots;
+        } else {
+            roots.forEach(root => {
+                const children = getChildren(root.id);
+                if (children.length > 0) {
+                    children.forEach(c => {
+                        tempDisplayProducts.push({ ...c, _parentName: root.name });
+                    });
+                } else {
+                    tempDisplayProducts.push(root);
+                }
+            });
+        }
+
+        const wsData = [];
         const header = ["المنتج", ...days.map(d => `${d}`)];
         wsData.push(header);
 
-        // Data Rows
-        displayProducts.forEach(prod => {
+        tempDisplayProducts.forEach(prod => {
             const name = prod._parentName ? `${prod._parentName} / ${prod.name}` : prod.name;
             const row = [name];
             days.forEach(day => {
-                const val = reportMap[prod.id]?.[day];
+                const val = tempReportMap[prod.id]?.[day];
                 row.push(val === '-' ? 0 : val);
             });
             wsData.push(row);
@@ -158,10 +217,24 @@ const MonthlyBranchReport = ({ branchId, city, typeId, products, onClose, branch
 
         const ws = XLSX.utils.aoa_to_sheet(wsData);
         const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "Report");
-
-        // Download
+        XLSX.utils.book_append_sheet(wb, ws, fieldLabel.substring(0, 31)); // sheet names limited to 31 chars
         XLSX.writeFile(wb, `Report_${branchName}_${selectedMonth}_${fieldLabel}.xlsx`);
+    };
+
+    const handleExportExcel = () => {
+        if (!selectedField) return;
+
+        if (selectedField === 'all') {
+            const actualFields = fieldOptions.filter(f => f.value !== 'all');
+            actualFields.forEach((field, index) => {
+                setTimeout(() => {
+                    generateAndExportSingleField(field.value, field.label);
+                }, index * 800); // Increased delay to avoid browser blocking multiple downloads
+            });
+        } else {
+            const fieldLabel = fieldOptions.find(f => f.value === selectedField)?.label || selectedField;
+            generateAndExportSingleField(selectedField, fieldLabel);
+        }
     };
 
     return (
@@ -220,7 +293,11 @@ const MonthlyBranchReport = ({ branchId, city, typeId, products, onClose, branch
                 </div>
             </div>
 
-            {!selectedField ? (
+            {selectedField === 'all' ? (
+                <div style={{ textAlign: 'center', padding: '5rem', color: '#64748b', border: '1px dashed #e2e8f0', borderRadius: '8px' }}>
+                    <p style={{ fontSize: '1.1rem' }}>لقد اخترت <strong>الكل</strong>. سيتم تصدير كل نوع بيانات في ملف منفصل تلقائياً عند النقر على زر التصدير.</p>
+                </div>
+            ) : !selectedField ? (
                 <div style={{ textAlign: 'center', padding: '5rem', color: '#64748b', border: '1px dashed #e2e8f0', borderRadius: '8px' }}>
                     <p style={{ fontSize: '1.1rem' }}>يرجى اختيار <strong>نوع البيانات</strong> من القائمة بالأعلى لعرض التقرير.</p>
                 </div>
