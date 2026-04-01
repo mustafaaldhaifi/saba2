@@ -21,7 +21,7 @@ const MonthlyBranchReport = ({ branchId, city, typeId, products, onClose, branch
         { value: 'directTransfer', label: 'تجهيز مباشر' },
         { value: 'freeIncrease', label: 'تعويض زبون' },
         { value: 'closeStock', label: 'المتبقي' },
-        { value: 'all', label: 'الكل (تصدير كملفات منفصلة)' },
+        { value: 'all', label: 'الكل (في ملف واحد)' },
     ];
 
     useEffect(() => {
@@ -138,7 +138,7 @@ const MonthlyBranchReport = ({ branchId, city, typeId, products, onClose, branch
         });
     }
 
-    const generateAndExportSingleField = (fieldValue, fieldLabel) => {
+    const getFieldData = (fieldValue, fieldLabel) => {
         const tempReportMap = {};
 
         monthlyData.forEach(prodDoc => {
@@ -202,6 +202,8 @@ const MonthlyBranchReport = ({ branchId, city, typeId, products, onClose, branch
         }
 
         const wsData = [];
+        // Add Header for the section
+        wsData.push([`--- ${fieldLabel} ---`]);
         const header = ["المنتج", ...days.map(d => `${d}`)];
         wsData.push(header);
 
@@ -215,25 +217,32 @@ const MonthlyBranchReport = ({ branchId, city, typeId, products, onClose, branch
             wsData.push(row);
         });
 
-        const ws = XLSX.utils.aoa_to_sheet(wsData);
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, fieldLabel.substring(0, 31)); // sheet names limited to 31 chars
-        XLSX.writeFile(wb, `Report_${branchName}_${selectedMonth}_${fieldLabel}.xlsx`);
+        return wsData;
     };
 
     const handleExportExcel = () => {
         if (!selectedField) return;
 
+        const wb = XLSX.utils.book_new();
+
         if (selectedField === 'all') {
+            let combinedData = [];
             const actualFields = fieldOptions.filter(f => f.value !== 'all');
-            actualFields.forEach((field, index) => {
-                setTimeout(() => {
-                    generateAndExportSingleField(field.value, field.label);
-                }, index * 800); // Increased delay to avoid browser blocking multiple downloads
+            
+            actualFields.forEach((field) => {
+                const fieldData = getFieldData(field.value, field.label);
+                combinedData = [...combinedData, ...fieldData, []]; // Add empty row as spacer
             });
+
+            const ws = XLSX.utils.aoa_to_sheet(combinedData);
+            XLSX.utils.book_append_sheet(wb, ws, "تقرير شامل");
+            XLSX.writeFile(wb, `Report_All_${branchName}_${selectedMonth}.xlsx`);
         } else {
             const fieldLabel = fieldOptions.find(f => f.value === selectedField)?.label || selectedField;
-            generateAndExportSingleField(selectedField, fieldLabel);
+            const fieldData = getFieldData(selectedField, fieldLabel);
+            const ws = XLSX.utils.aoa_to_sheet(fieldData);
+            XLSX.utils.book_append_sheet(wb, ws, fieldLabel.substring(0, 31));
+            XLSX.writeFile(wb, `Report_${branchName}_${selectedMonth}_${fieldLabel}.xlsx`);
         }
     };
 
@@ -295,7 +304,7 @@ const MonthlyBranchReport = ({ branchId, city, typeId, products, onClose, branch
 
             {selectedField === 'all' ? (
                 <div style={{ textAlign: 'center', padding: '5rem', color: '#64748b', border: '1px dashed #e2e8f0', borderRadius: '8px' }}>
-                    <p style={{ fontSize: '1.1rem' }}>لقد اخترت <strong>الكل</strong>. سيتم تصدير كل نوع بيانات في ملف منفصل تلقائياً عند النقر على زر التصدير.</p>
+                    <p style={{ fontSize: '1.1rem' }}>لقد اخترت <strong>الكل</strong>. سيتم تصدير كافة أنواع البيانات في ملف اكسل واحد مرتبة تحت بعضها عند النقر على زر التصدير.</p>
                 </div>
             ) : !selectedField ? (
                 <div style={{ textAlign: 'center', padding: '5rem', color: '#64748b', border: '1px dashed #e2e8f0', borderRadius: '8px' }}>
