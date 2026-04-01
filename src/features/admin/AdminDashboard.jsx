@@ -3,6 +3,7 @@ import DashboardLayout from '../../layouts/DashboardLayout';
 import { collection, query, where, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, setDoc, orderBy, Timestamp, writeBatch } from "firebase/firestore";
 import { db } from '../../config/firebase';
 import MonthlyBranchReport from './MonthlyBranchReport';
+import GlobalMonthlyReport from './GlobalMonthlyReport';
 
 // Helper: Calculate Remaining Stock
 // Helper: Calculate Remaining Stock
@@ -63,6 +64,7 @@ const AdminDashboard = () => {
     const [selectedReportDate, setSelectedReportDate] = useState('');
     const [dailyReportData, setDailyReportData] = useState([]); // { productId: { ... } }
     const [showMonthlyReport, setShowMonthlyReport] = useState(false);
+    const [showGlobalMonthlyReport, setShowGlobalMonthlyReport] = useState(false);
 
     // Data
     const [orderTypes, setOrderTypes] = useState([]);
@@ -1061,6 +1063,22 @@ const AdminDashboard = () => {
                             {showMonthlyReport ? 'إخفاء تقرير الشهر' : 'تقرير الشهر كامل'}
                         </button>
                     )}
+                    {selectedCity && selectedOrderType === '5' && (
+                        <button
+                            className="btn"
+                            style={{
+                                backgroundColor: showGlobalMonthlyReport ? '#ef4444' : '#10b981',
+                                color: 'white',
+                                border: 'none'
+                            }}
+                            onClick={() => {
+                                setShowGlobalMonthlyReport(!showGlobalMonthlyReport);
+                                if (!showGlobalMonthlyReport) setShowMonthlyReport(false);
+                            }}
+                        >
+                            {showGlobalMonthlyReport ? 'إخفاء التقرير الشامل' : 'تقرير الفروع الشامل'}
+                        </button>
+                    )}
                 </div>
             </div>
 
@@ -1074,6 +1092,19 @@ const AdminDashboard = () => {
                         products={products}
                         onClose={() => setShowMonthlyReport(false)}
                         branchName={branches.find(b => b.id === selectedBranch)?.name || ''}
+                    />
+                </div>
+            )}
+
+            {/* Global Monthly Report View */}
+            {showGlobalMonthlyReport && selectedCity && selectedOrderType === '5' && (
+                <div style={{ marginBottom: '2rem' }}>
+                    <GlobalMonthlyReport
+                        branches={branches.filter(b => b.city === selectedCity || (!b.city && selectedCity === 'ryad'))}
+                        typeId={selectedOrderType}
+                        initialMonth={new Date().toISOString().substring(0, 7)}
+                        onClose={() => setShowGlobalMonthlyReport(false)}
+                        products={products}
                     />
                 </div>
             )}
