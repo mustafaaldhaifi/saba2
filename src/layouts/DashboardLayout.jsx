@@ -81,12 +81,24 @@ const DashboardLayout = ({ children, title, role }) => {
 
     const menuItems = role === 'admin' ? [
         { label: 'الرئيسية', path: '/admin', icon: '🏠' },
+        { label: 'إدارة المنتجات', path: '/admin?tab=products', icon: '📦' },
+        { label: 'التقارير', path: '/admin?tab=reports', icon: '📊' },
         { label: 'الفروع', path: '/admin/branches', icon: '🏢' },
         { label: 'الإعدادات', path: '/admin/settings', icon: '⚙️' },
     ] : [
         { label: 'الرئيسية', path: '/branch', icon: '🏠' },
         { label: 'الطلبات', path: '/branch/orders', icon: '📦' },
     ];
+
+    const isItemActive = (item) => {
+        if (item.path.includes('?')) {
+            return location.pathname + location.search === item.path;
+        }
+        if (item.path === '/admin') {
+            return location.pathname === '/admin' && !location.search;
+        }
+        return location.pathname === item.path;
+    };
 
     return (
         <div className="dashboard-container">
@@ -124,7 +136,9 @@ const DashboardLayout = ({ children, title, role }) => {
 
                 <nav style={{ flex: 1, padding: '1.5rem 0.5rem' }}>
                     <ul style={{ listStyle: 'none' }}>
-                        {menuItems.map((item, index) => (
+                        {menuItems.map((item, index) => {
+                            const active = isItemActive(item);
+                            return (
                             <li key={index} style={{ marginBottom: '0.5rem' }}>
                                 <button
                                     className="sidebar-link"
@@ -139,9 +153,9 @@ const DashboardLayout = ({ children, title, role }) => {
                                         padding: '0.75rem 1rem',
                                         border: 'none',
                                         borderRadius: 'var(--radius-md)',
-                                        backgroundColor: location.pathname === item.path ? 'hsl(var(--color-primary) / 0.1)' : 'transparent',
-                                        color: location.pathname === item.path ? 'hsl(var(--color-primary))' : 'hsl(var(--color-text-main))',
-                                        fontWeight: location.pathname === item.path ? '600' : '400',
+                                        backgroundColor: active ? 'hsl(var(--color-primary) / 0.1)' : 'transparent',
+                                        color: active ? 'hsl(var(--color-primary))' : 'hsl(var(--color-text-main))',
+                                        fontWeight: active ? '600' : '400',
                                         cursor: 'pointer',
                                         transition: 'all 0.2s',
                                         display: 'flex',
@@ -153,7 +167,8 @@ const DashboardLayout = ({ children, title, role }) => {
                                     <span className="sidebar-link-text" style={{ whiteSpace: 'nowrap' }}>{item.label}</span>
                                 </button>
                             </li>
-                        ))}
+                            );
+                        })}
                     </ul>
                 </nav>
 

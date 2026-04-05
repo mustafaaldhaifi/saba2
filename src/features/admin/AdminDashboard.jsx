@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import DashboardLayout from '../../layouts/DashboardLayout';
 import { collection, query, where, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, setDoc, orderBy, Timestamp, writeBatch } from "firebase/firestore";
 import { db } from '../../config/firebase';
@@ -65,6 +66,25 @@ const AdminDashboard = () => {
     const [dailyReportData, setDailyReportData] = useState([]); // { productId: { ... } }
     const [showMonthlyReport, setShowMonthlyReport] = useState(false);
     const [showGlobalMonthlyReport, setShowGlobalMonthlyReport] = useState(false);
+
+    const location = useLocation();
+    const navigate = useNavigate();
+    const searchParams = new URLSearchParams(location.search);
+    const tabFromUrl = searchParams.get('tab') || 'home';
+
+    // Active View State (home | products | reports)
+    const [activeTab, setActiveTabState] = useState(tabFromUrl);
+
+    useEffect(() => {
+        if (tabFromUrl !== activeTab) {
+            setActiveTabState(tabFromUrl);
+        }
+    }, [tabFromUrl]);
+
+    const setActiveTab = (tab) => {
+        setActiveTabState(tab);
+        navigate(`/admin${tab === 'home' ? '' : `?tab=${tab}`}`);
+    };
 
     // Data
     const [orderTypes, setOrderTypes] = useState([]);
@@ -951,7 +971,40 @@ const AdminDashboard = () => {
     };
 
     return (
-        <DashboardLayout title="إدارة المنتجات" role="admin">
+        <DashboardLayout title={activeTab === 'home' ? "الرئيسية" : activeTab === 'products' ? "إدارة المنتجات" : "التقارير"} role="admin">
+
+            {activeTab !== 'home' && (
+                <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', borderBottom: '1px solid #e2e8f0', paddingBottom: '1rem' }}>
+                    <button className={`btn ${activeTab === 'products' ? 'btn-primary' : ''}`} onClick={() => setActiveTab('products')} style={{ background: activeTab === 'products' ? '' : 'transparent', color: activeTab === 'products' ? '#fff' : '#64748b', boxShadow: 'none', border: activeTab === 'products' ? 'none' : '1px solid #cbd5e1' }}>
+                        📦 إدارة المنتجات
+                    </button>
+                    <button className={`btn ${activeTab === 'reports' ? 'btn-primary' : ''}`} onClick={() => setActiveTab('reports')} style={{ background: activeTab === 'reports' ? '' : 'transparent', color: activeTab === 'reports' ? '#fff' : '#64748b', boxShadow: 'none', border: activeTab === 'reports' ? 'none' : '1px solid #cbd5e1' }}>
+                        📊 التقارير
+                    </button>
+                    <button className="btn" onClick={() => setActiveTab('home')} style={{ background: '#f8fafc', color: '#64748b', boxShadow: 'none', border: '1px solid #cbd5e1', marginRight: 'auto' }}>
+                        🏠 الرئيسية
+                    </button>
+                </div>
+            )}
+
+            {activeTab === 'home' ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
+                    <h1 style={{ fontSize: '2.5rem', color: '#0f172a', marginBottom: '3rem', fontWeight: 'bold' }}>مرحباً بك في لوحة الإدارة</h1>
+                    <div style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', justifyContent: 'center' }}>
+                        <div onClick={() => setActiveTab('products')} style={{ cursor: 'pointer', backgroundColor: '#fff', borderRadius: '16px', padding: '3.5rem 2rem', width: '300px', textAlign: 'center', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)', border: '1px solid #e2e8f0', transition: 'all 0.3s ease' }} onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-5px)'} onMouseOut={(e) => e.currentTarget.style.transform = 'none'}>
+                            <div style={{ fontSize: '4rem', marginBottom: '1.5rem' }}>📦</div>
+                            <h2 style={{ fontSize: '1.75rem', color: '#0284c7', marginBottom: '1rem', fontWeight: 'bold' }}>إدارة المنتجات</h2>
+                            <p style={{ color: '#64748b', fontSize: '1rem', lineHeight: '1.6' }}>إضافة، تعديل وحذف المنتجات وضبط الأرصدة الافتتاحية للمنتجات.</p>
+                        </div>
+                        <div onClick={() => setActiveTab('reports')} style={{ cursor: 'pointer', backgroundColor: '#fff', borderRadius: '16px', padding: '3.5rem 2rem', width: '300px', textAlign: 'center', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)', border: '1px solid #e2e8f0', transition: 'all 0.3s ease' }} onMouseOver={(e) => e.currentTarget.style.transform = 'translateY(-5px)'} onMouseOut={(e) => e.currentTarget.style.transform = 'none'}>
+                            <div style={{ fontSize: '4rem', marginBottom: '1.5rem' }}>📊</div>
+                            <h2 style={{ fontSize: '1.75rem', color: '#10b981', marginBottom: '1rem', fontWeight: 'bold' }}>التقارير</h2>
+                            <p style={{ color: '#64748b', fontSize: '1rem', lineHeight: '1.6' }}>الاطلاع على تقارير الجرد اليومي والشهرية للفروع الشاملة والمفصلة.</p>
+                        </div>
+                    </div>
+                </div>
+            ) : (
+                <>
 
             {/* Filters Section */}
             <div className="card" style={{ marginBottom: '2rem' }}>
@@ -1003,14 +1056,17 @@ const AdminDashboard = () => {
                             onChange={(e) => setSelectedOrderType(e.target.value)}
                         >
                             <option value="">-- اختر النوع --</option>
-                            {orderTypes.map(t => (
-                                <option key={t.id} value={t.id}>{t.name}</option>
-                            ))}
+                            {orderTypes
+                                .filter(t => activeTab === 'reports' ? t.name.includes('يومي') : true)
+                                .map(t => (
+                                    <option key={t.id} value={t.id}>{t.name}</option>
+                                ))
+                            }
                         </select>
                     </div>
 
                     {/* Daily Report Date Select (Dynamic) */}
-                    {reportDates.length > 0 && (
+                    {activeTab === 'reports' && reportDates.length > 0 && (
                         <div className="input-group" style={{ marginBottom: 0 }}>
                             <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>تاريخ التقرير</label>
                             <select
@@ -1038,19 +1094,21 @@ const AdminDashboard = () => {
 
             {/* Products Action Bar */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
-                <h2 style={{ fontSize: '1.5rem', color: 'hsl(var(--color-primary))', fontWeight: '700' }}>
-                    قائمة المنتجات ({products.length})
+                <h2 style={{ fontSize: '1.5rem', color: activeTab === 'reports' ? '#10b981' : 'hsl(var(--color-primary))', fontWeight: '700' }}>
+                    {activeTab === 'reports' ? 'التقارير المتاحة' : `قائمة المنتجات (${products.length})`}
                 </h2>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <button
-                        className="btn btn-primary"
-                        onClick={() => handleOpenModal()}
-                        disabled={!selectedOrderType}
-                        title={!selectedOrderType ? "اختر نوع الطلبية أولاً" : ""}
-                    >
-                        + إضافة منتج جديد
-                    </button>
-                    {selectedCity && selectedBranch && selectedOrderType === '5' && (
+                    {activeTab === 'products' && (
+                        <button
+                            className="btn btn-primary"
+                            onClick={() => handleOpenModal()}
+                            disabled={!selectedOrderType}
+                            title={!selectedOrderType ? "اختر نوع الطلبية أولاً" : ""}
+                        >
+                            + إضافة منتج جديد
+                        </button>
+                    )}
+                    {activeTab === 'reports' && selectedCity && selectedBranch && selectedOrderType && (
                         <button
                             className="btn"
                             style={{
@@ -1063,7 +1121,7 @@ const AdminDashboard = () => {
                             {showMonthlyReport ? 'إخفاء تقرير الشهر' : 'تقرير الشهر كامل'}
                         </button>
                     )}
-                    {selectedCity && selectedOrderType === '5' && (
+                    {activeTab === 'reports' && selectedCity && selectedOrderType && (
                         <button
                             className="btn"
                             style={{
@@ -1083,10 +1141,11 @@ const AdminDashboard = () => {
             </div>
 
             {/* Monthly Report View */}
-            {showMonthlyReport && selectedCity && selectedBranch && selectedOrderType === '5' && (
+            {showMonthlyReport && selectedCity && selectedBranch && selectedOrderType && (
                 <div style={{ marginBottom: '2rem' }}>
                     <MonthlyBranchReport
                         branchId={selectedBranch}
+                        branches={branches.filter(b => b.city === selectedCity || (!b.city && selectedCity === 'ryad'))}
                         city={selectedCity}
                         typeId={selectedOrderType}
                         products={products}
@@ -1097,7 +1156,7 @@ const AdminDashboard = () => {
             )}
 
             {/* Global Monthly Report View */}
-            {showGlobalMonthlyReport && selectedCity && selectedOrderType === '5' && (
+            {showGlobalMonthlyReport && selectedCity && selectedOrderType && (
                 <div style={{ marginBottom: '2rem' }}>
                     <GlobalMonthlyReport
                         branches={branches.filter(b => b.city === selectedCity || (!b.city && selectedCity === 'ryad'))}
@@ -1127,14 +1186,20 @@ const AdminDashboard = () => {
                                         <th style={{ position: 'sticky', left: 0, zIndex: 11, backgroundColor: '#f8f9fa', padding: '10px', borderBottom: '2px solid #dee2e6' }}>الاصناف</th>
                                         <th style={{ width: '60px', padding: '10px', borderBottom: '2px solid #dee2e6' }}>افتتاحية الرصيد في هذا التاريخ</th>
                                         <th style={{ width: '60px', padding: '10px', borderBottom: '2px solid #dee2e6', color: '#64748b', fontSize: '11px' }}>الموجودة فعلياً</th>
-                                        <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>المستلم</th>
-                                        <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>الجرد</th>
-                                        <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>مبيعات</th>
-                                        <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>وجبة موظف</th>
-                                        <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>تحويل %</th>
-                                        <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>التالف</th>
-                                        <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>المتبقي</th>
-                                        <th style={{ width: '80px', padding: '10px', borderBottom: '2px solid #dee2e6' }}>إجراءات</th>
+                                        {activeTab === 'reports' && (
+                                            <>
+                                                <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>المستلم</th>
+                                                <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>الجرد</th>
+                                                <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>مبيعات</th>
+                                                <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>وجبة موظف</th>
+                                                <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>تحويل %</th>
+                                                <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>التالف</th>
+                                                <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>المتبقي</th>
+                                            </>
+                                        )}
+                                        {activeTab === 'products' && (
+                                            <th style={{ width: '80px', padding: '10px', borderBottom: '2px solid #dee2e6' }}>إجراءات</th>
+                                        )}
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1185,10 +1250,12 @@ const AdminDashboard = () => {
                                                                     console.log('Raw Report (Parent):', report);
                                                                 }}>
                                                                     {item.name}
-                                                                    <div style={{ marginTop: '5px', display: 'flex', gap: '4px', fontSize: '10px' }}>
-                                                                        <span title="تعديل الأب" onClick={(e) => { e.stopPropagation(); handleOpenModal(item); }}>✏️</span>
-                                                                        <span title="حذف الأب" onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}>❌</span>
-                                                                    </div>
+                                                                    {activeTab === 'products' && (
+                                                                        <div style={{ marginTop: '5px', display: 'flex', gap: '4px', fontSize: '10px' }}>
+                                                                            <span title="تعديل الأب" onClick={(e) => { e.stopPropagation(); handleOpenModal(item); }}>✏️</span>
+                                                                            <span title="حذف الأب" onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}>❌</span>
+                                                                        </div>
+                                                                    )}
                                                                 </div>
                                                                 {/* Children Names Stack */}
                                                                 <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, fontSize: '12px' }}>
@@ -1225,6 +1292,11 @@ const AdminDashboard = () => {
 
                                                     {/* Common Data Columns Function */}
                                                     {['openingStockQnt', 'actualOpening', 'recieved', 'add', 'sales', 'staffMeal', 'transfer', 'dameged', 'closeStock'].map(field => {
+                                                        
+                                                        if (activeTab === 'products' && !['openingStockQnt', 'actualOpening'].includes(field)) {
+                                                            return null;
+                                                        }
+
                                                         const isParentField = ['openingStockQnt', 'actualOpening', 'recieved', 'transfer', 'closeStock'].includes(field);
 
                                                         // Case 1: Has Children & Field is Parent-Only -> Render Single Value for Parent
@@ -1347,39 +1419,41 @@ const AdminDashboard = () => {
                                                     })}
 
                                                     {/* Actions Column */}
-                                                    <td style={{ padding: 0, verticalAlign: 'top', borderLeft: '1px solid #eee' }}>
-                                                        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                                                            {dataRows.map((rowItem, idx) => (
-                                                                <div key={rowItem.id} style={{
-                                                                    padding: '6px 8px',
-                                                                    borderBottom: idx === dataRows.length - 1 ? 'none' : '1px solid #eee',
-                                                                    height: hasChildren ? '40px' : 'auto',
-                                                                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px'
-                                                                }}>
-                                                                    <button
-                                                                        onClick={() => handleOpenModal(rowItem)}
-                                                                        style={{
-                                                                            background: 'none', border: 'none', cursor: 'pointer',
-                                                                            fontSize: '1.2em', padding: '0 4px'
-                                                                        }}
-                                                                        title="تعديل"
-                                                                    >
-                                                                        ✏️
-                                                                    </button>
-                                                                    <button
-                                                                        onClick={() => handleDelete(rowItem.id)}
-                                                                        style={{
-                                                                            background: 'none', border: 'none', cursor: 'pointer',
-                                                                            fontSize: '1em', padding: '0 4px', opacity: 0.7
-                                                                        }}
-                                                                        title="حذف"
-                                                                    >
-                                                                        ❌
-                                                                    </button>
-                                                                </div>
-                                                            ))}
-                                                        </div>
-                                                    </td>
+                                                    {activeTab === 'products' && (
+                                                        <td style={{ padding: 0, verticalAlign: 'top', borderLeft: '1px solid #eee' }}>
+                                                            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                                                                {dataRows.map((rowItem, idx) => (
+                                                                    <div key={rowItem.id} style={{
+                                                                        padding: '6px 8px',
+                                                                        borderBottom: idx === dataRows.length - 1 ? 'none' : '1px solid #eee',
+                                                                        height: hasChildren ? '40px' : 'auto',
+                                                                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px'
+                                                                    }}>
+                                                                        <button
+                                                                            onClick={() => handleOpenModal(rowItem)}
+                                                                            style={{
+                                                                                background: 'none', border: 'none', cursor: 'pointer',
+                                                                                fontSize: '1.2em', padding: '0 4px'
+                                                                            }}
+                                                                            title="تعديل"
+                                                                        >
+                                                                            ✏️
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => handleDelete(rowItem.id)}
+                                                                            style={{
+                                                                                background: 'none', border: 'none', cursor: 'pointer',
+                                                                                fontSize: '1em', padding: '0 4px', opacity: 0.7
+                                                                            }}
+                                                                            title="حذف"
+                                                                        >
+                                                                            ❌
+                                                                        </button>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </td>
+                                                    )}
                                                 </tr>
                                             );
                                         });
@@ -1450,6 +1524,8 @@ const AdminDashboard = () => {
                     </div>
                 )}
             </div>
+            </>
+            )}
 
             {/* Add/Edit Modal */}
             {isModalOpen && (

@@ -5,12 +5,13 @@ import * as XLSX from 'xlsx';
 
 const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName, products: currentProducts }) => {
     const [selectedMonth, setSelectedMonth] = useState(initialMonth || new Date().toISOString().substring(0, 7));
-    const [selectedField, setSelectedField] = useState('sales');
+    const [selectedBranches, setSelectedBranches] = useState(branches.map(b => b.id));
+    const [selectedFields, setSelectedFields] = useState(['sales']);
     const [isProcessing, setIsProcessing] = useState(false);
     const [progress, setProgress] = useState({ current: 0, total: branches.length, branchName: '' });
     const [completed, setCompleted] = useState(false);
     const [allProducts, setAllProducts] = useState([]);
-    const [aggregatedData, setAggregatedData] = useState({}); // { linkId: { branchId: value } }
+    const [aggregatedData, setAggregatedData] = useState({}); // { linkId: { branchId: { field: value } } }
 
     const fieldOptions = [
         { value: 'received', label: 'المستلم' },
@@ -44,15 +45,20 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
     }, [typeId]);
 
     const handleStartProcessing = async () => {
-        if (!selectedMonth || !selectedField) return;
+        if (!selectedMonth || selectedBranches.length === 0 || selectedFields.length === 0) {
+            alert("يرجى اختيار شهر واحد وفرع واحد ونوع بيانات واحد على الأقل");
+            return;
+        }
         setIsProcessing(true);
         setCompleted(false);
         const results = {}; // Map to store grouped results
 
+        const targetBranches = branches.filter(b => selectedBranches.includes(b.id));
+
         try {
-            for (let i = 0; i < branches.length; i++) {
-                const branch = branches[i];
-                setProgress({ current: i + 1, total: branches.length, branchName: branch.name });
+            for (let i = 0; i < targetBranches.length; i++) {
+                const branch = targetBranches[i];
+                setProgress({ current: i + 1, total: targetBranches.length, branchName: branch.name });
 
                 // Fetch Monthly Summaries for this branch & month
                 const q = query(
@@ -81,6 +87,9 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                             branches: {} 
                         };
                     }
+                    if (!results[linkId].branches[branch.id]) {
+                        results[linkId].branches[branch.id] = {};
+                    }
 
                     // Collect day values handling both standard maps and dot notation keys
                     let dayValuesMap = {};
@@ -98,15 +107,15 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                         }
                     });
 
-                    // Sum the values for the selected field across all collected days
-                    let totalVal = 0;
-                    Object.values(dayValuesMap).forEach(dayVal => {
-                        const val = Number(dayVal[selectedField] || 0);
-                        totalVal += val;
+                    // Sum the values for all selected fields across all collected days
+                    selectedFields.forEach(field => {
+                        let totalVal = 0;
+                        Object.values(dayValuesMap).forEach(dayVal => {
+                            const val = Number(dayVal[field] || 0);
+                            totalVal += val;
+                        });
+                        results[linkId].branches[branch.id][field] = (results[linkId].branches[branch.id][field] || 0) + totalVal;
                     });
-
-                    // Results: Store per branch
-                    results[linkId].branches[branch.id] = (results[linkId].branches[branch.id] || 0) + totalVal;
                 });
             }
 
@@ -123,44 +132,50 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
     const handleExport = () => {
         if (Object.keys(aggregatedData).length === 0) return;
 
-        const wsData = [];
-        
-        // 1. Header Row: [Product Name, ...Branch Names, Total]
-        const header = ["المنتج", ...branches.map(b => b.name), "الإجمالي العام"];
-        wsData.push([`تقرير شامل للفروع - ${selectedMonth} - ${fieldOptions.find(f => f.value === selectedField)?.label}`]);
-        wsData.push(header);
+        const targetBranches = branches.filter(b => selectedBranches.includes(b.id));
+        const wb = XLSX.utils.book_new();
+        let combinedData = [];
 
-        // 2. Data Rows
-        // Sort Products? (By name preferably)
-        const sortedLinkIds = Object.keys(aggregatedData).sort((a, b) => 
-            aggregatedData[a].name.localeCompare(aggregatedData[b].name)
-        );
-
-        sortedLinkIds.forEach(linkId => {
-            const prod = aggregatedData[linkId];
+        selectedFields.forEach(field => {
+            const fieldLabel = fieldOptions.find(f => f.value === field)?.label || field;
             
-            // Only show relevant products based on field logic?
-            // Existing logic: sales shows all items (sales + inventory), inventory shows inventory items only.
-            const isSalesItem = prod.isSales === true || prod.isSales === "true";
-            if (selectedField !== 'sales' && isSalesItem) return;
+            // 1. Header Row
+            const header = ["المنتج", ...targetBranches.map(b => b.name), "الإجمالي العام"];
+            combinedData.push([`--- تقرير الفروع - ${selectedMonth} - ${fieldLabel} ---`]);
+            combinedData.push(header);
 
-            const row = [prod.name];
-            let rowTotal = 0;
+            // 2. Data Rows
+            const sortedLinkIds = Object.keys(aggregatedData).sort((a, b) => 
+                aggregatedData[a].name.localeCompare(aggregatedData[b].name)
+            );
 
-            branches.forEach(branch => {
-                const val = prod.branches[branch.id] || 0;
-                row.push(val);
-                rowTotal += val;
+            sortedLinkIds.forEach(linkId => {
+                const prod = aggregatedData[linkId];
+                
+                const isSalesItem = prod.isSales === true || prod.isSales === "true";
+                if (field !== 'sales' && isSalesItem) return;
+
+                const row = [prod.name];
+                let rowTotal = 0;
+
+                targetBranches.forEach(branch => {
+                    const val = prod.branches[branch.id]?.[field] || 0;
+                    row.push(val);
+                    rowTotal += val;
+                });
+
+                row.push(rowTotal);
+                combinedData.push(row);
             });
-
-            row.push(rowTotal);
-            wsData.push(row);
+            
+            combinedData.push([]); // Empty row for spacing
         });
 
-        const ws = XLSX.utils.aoa_to_sheet(wsData);
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "التقرير الشامل");
-        XLSX.writeFile(wb, `Global_Report_${selectedMonth}_${selectedField}.xlsx`);
+        const ws = XLSX.utils.aoa_to_sheet(combinedData);
+        XLSX.utils.book_append_sheet(wb, ws, "البيانات الشاملة");
+
+        let fieldsName = selectedFields.length === 1 ? `_${fieldOptions.find(f => f.value === selectedFields[0])?.label}` : `_بيانات_متعددة`;
+        XLSX.writeFile(wb, `Global_Report${fieldsName}_${selectedMonth}.xlsx`);
     };
 
     return (
@@ -194,18 +209,61 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                 </div>
 
                 <div className="input-group" style={{ marginBottom: 0 }}>
-                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#475569' }}>نوع البيانات (العمود)</label>
-                    <select
-                        className="input-field"
-                        value={selectedField}
-                        onChange={(e) => setSelectedField(e.target.value)}
-                        disabled={isProcessing}
-                        style={{ padding: '0.75rem', borderRadius: '8px', backgroundColor: '#fff' }}
-                    >
-                        {fieldOptions.map(opt => (
-                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#475569' }}>تحديد الفروع</label>
+                    <div style={{ maxHeight: '120px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '0.5rem', backgroundColor: '#fff' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', borderBottom: '1px solid #f1f5f9', fontWeight: 'bold' }}>
+                            <input 
+                                type="checkbox" 
+                                checked={selectedBranches.length === branches.length}
+                                onChange={(e) => setSelectedBranches(e.target.checked ? branches.map(b => b.id) : [])}
+                                disabled={isProcessing}
+                            /> 
+                            تحديد الكل
+                        </label>
+                        {branches.map(b => (
+                            <label key={b.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '0.85rem' }}>
+                                <input 
+                                    type="checkbox" 
+                                    checked={selectedBranches.includes(b.id)}
+                                    onChange={(e) => {
+                                        if (e.target.checked) setSelectedBranches([...selectedBranches, b.id]);
+                                        else setSelectedBranches(selectedBranches.filter(id => id !== b.id));
+                                    }}
+                                    disabled={isProcessing}
+                                /> 
+                                {b.name}
+                            </label>
                         ))}
-                    </select>
+                    </div>
+                </div>
+
+                <div className="input-group" style={{ marginBottom: 0 }}>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#475569' }}>نوع البيانات</label>
+                    <div style={{ maxHeight: '120px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '0.5rem', backgroundColor: '#fff' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', borderBottom: '1px solid #f1f5f9', fontWeight: 'bold' }}>
+                            <input 
+                                type="checkbox" 
+                                checked={selectedFields.length === fieldOptions.length}
+                                onChange={(e) => setSelectedFields(e.target.checked ? fieldOptions.map(f => f.value) : [])}
+                                disabled={isProcessing}
+                            /> 
+                            تحديد الكل
+                        </label>
+                        {fieldOptions.map(f => (
+                            <label key={f.value} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '0.85rem' }}>
+                                <input 
+                                    type="checkbox" 
+                                    checked={selectedFields.includes(f.value)}
+                                    onChange={(e) => {
+                                        if (e.target.checked) setSelectedFields([...selectedFields, f.value]);
+                                        else setSelectedFields(selectedFields.filter(v => v !== f.value));
+                                    }}
+                                    disabled={isProcessing}
+                                /> 
+                                {f.label}
+                            </label>
+                        ))}
+                    </div>
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'flex-end' }}>
@@ -250,7 +308,7 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                 <div style={{ textAlign: 'center', padding: '2rem', backgroundColor: '#ecfdf5', borderRadius: '12px', border: '1px solid #a7f3d0' }}>
                     <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>✅</div>
                     <h3 style={{ color: '#065f46', margin: '0 0 0.5rem 0' }}>اكتملت معالجة البيانات بنجاح!</h3>
-                    <p style={{ color: '#047857', marginBottom: '1.5rem' }}>تم تجميع بيانات بكافة المنتجات لعدد {branches.length} فرع.</p>
+                    <p style={{ color: '#047857', marginBottom: '1.5rem' }}>تم تجميع وإجراء الحسابات لكافة المنتجات لعدد {selectedBranches.length} فرع ولعدد {selectedFields.length} نوع(أنواع) بيانات.</p>
                     <button
                         onClick={handleExport}
                         className="btn"
