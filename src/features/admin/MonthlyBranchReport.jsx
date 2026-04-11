@@ -197,16 +197,20 @@ const MonthlyBranchReport = ({ branchId, branches, city, typeId, products, onClo
         // Add Header for the section
         const branchNameLabel = branches?.find(b => b.id === targetBranchId)?.name || targetBranchId;
         wsData.push([`--- ${fieldLabel} (${branchNameLabel}) ---`]);
-        const header = ["المنتج", ...days.map(d => `${d}`)];
+        const header = ["المنتج", ...days.map(d => `${d}`), "الإجمالي"];
         wsData.push(header);
 
         tempDisplayProducts.forEach(prod => {
             const name = prod._parentName ? `${prod._parentName} / ${prod.name}` : prod.name;
             const row = [name];
+            let rowTotal = 0;
             days.forEach(day => {
                 const val = tempReportMap[prod.id]?.[day];
-                row.push(val === '-' ? 0 : val);
+                const numericVal = Number(val) || 0;
+                row.push(numericVal);
+                rowTotal += numericVal;
             });
+            row.push(rowTotal);
             wsData.push(row);
         });
 
@@ -388,6 +392,7 @@ const MonthlyBranchReport = ({ branchId, branches, city, typeId, products, onClo
                                 {days.map(day => (
                                     <th key={day} style={{ padding: '10px', borderBottom: '2px solid #e2e8f0', borderLeft: '1px solid #f1f5f9', minWidth: '35px' }}>{day}</th>
                                 ))}
+                                <th style={{ padding: '10px', borderBottom: '2px solid #e2e8f0', borderLeft: '1px solid #f1f5f9', minWidth: '60px', backgroundColor: '#f1f5f9', fontWeight: '800' }}>الإجمالي</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -418,6 +423,15 @@ const MonthlyBranchReport = ({ branchId, branches, city, typeId, products, onClo
                                             {reportMap[prod.id]?.[day] ?? '-'}
                                         </td>
                                     ))}
+                                    <td style={{ 
+                                        padding: '8px 4px', 
+                                        borderLeft: '1px solid #f1f5f9', 
+                                        backgroundColor: '#f8fafc', 
+                                        fontWeight: 'bold',
+                                        color: 'hsl(var(--color-primary))'
+                                    }}>
+                                        {days.reduce((sum, day) => sum + (Number(reportMap[prod.id]?.[day]) || 0), 0)}
+                                    </td>
                                 </tr>
                             ))}
                         </tbody>

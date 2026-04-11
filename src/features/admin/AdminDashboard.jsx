@@ -1159,7 +1159,8 @@ const AdminDashboard = () => {
             {showGlobalMonthlyReport && selectedCity && selectedOrderType && (
                 <div style={{ marginBottom: '2rem' }}>
                     <GlobalMonthlyReport
-                        branches={branches.filter(b => b.city === selectedCity || (!b.city && selectedCity === 'ryad'))}
+                        branches={branches}
+                        cityName={selectedCity}
                         typeId={selectedOrderType}
                         initialMonth={new Date().toISOString().substring(0, 7)}
                         onClose={() => setShowGlobalMonthlyReport(false)}

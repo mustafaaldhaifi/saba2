@@ -12,6 +12,7 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
     const [completed, setCompleted] = useState(false);
     const [allProducts, setAllProducts] = useState([]);
     const [aggregatedData, setAggregatedData] = useState({}); // { linkId: { branchId: { field: value } } }
+    const [cityFilter, setCityFilter] = useState(cityName || 'all');
 
     const fieldOptions = [
         { value: 'received', label: 'المستلم' },
@@ -210,17 +211,38 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
 
                 <div className="input-group" style={{ marginBottom: 0 }}>
                     <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#475569' }}>تحديد الفروع</label>
+                    <select 
+                        value={cityFilter}
+                        onChange={(e) => setCityFilter(e.target.value)}
+                        style={{ marginBottom: '8px', width: '100%', padding: '4px', borderRadius: '4px', border: '1px solid #cbd5e1' }}
+                    >
+                        <option value="all">كل المدن</option>
+                        <option value="ryad">الرياض</option>
+                        <option value="other">خارج الرياض</option>
+                    </select>
                     <div style={{ maxHeight: '120px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '0.5rem', backgroundColor: '#fff' }}>
                         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', borderBottom: '1px solid #f1f5f9', fontWeight: 'bold' }}>
                             <input 
                                 type="checkbox" 
-                                checked={selectedBranches.length === branches.length}
-                                onChange={(e) => setSelectedBranches(e.target.checked ? branches.map(b => b.id) : [])}
+                                checked={branches.length > 0 && branches.every(b => selectedBranches.includes(b.id))}
+                                onChange={(e) => {
+                                    if (e.target.checked) {
+                                        setSelectedBranches(branches.map(b => b.id));
+                                    } else {
+                                        setSelectedBranches([]);
+                                    }
+                                }}
                                 disabled={isProcessing}
                             /> 
-                            تحديد الكل
+                            تحديد الكل (كافة المدن)
                         </label>
-                        {branches.map(b => (
+                        {branches
+                            .filter(b => {
+                                if (cityFilter === 'all') return true;
+                                if (cityFilter === 'ryad') return b.city === 'ryad' || !b.city;
+                                return b.city === cityFilter;
+                            })
+                            .map(b => (
                             <label key={b.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '0.85rem' }}>
                                 <input 
                                     type="checkbox" 
@@ -231,7 +253,7 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                                     }}
                                     disabled={isProcessing}
                                 /> 
-                                {b.name}
+                                {b.name} <small style={{ color: '#94a3b8' }}>({b.city === 'other' ? 'خارج الرياض' : 'الرياض'})</small>
                             </label>
                         ))}
                     </div>
