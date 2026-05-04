@@ -5,6 +5,7 @@ import { collection, query, where, getDocs, getDoc, addDoc, updateDoc, deleteDoc
 import { db } from '../../config/firebase';
 import MonthlyBranchReport from './MonthlyBranchReport';
 import GlobalMonthlyReport from './GlobalMonthlyReport';
+import ProductCorrectionModal from './ProductCorrectionModal';
 
 // Helper: Calculate Remaining Stock
 // Helper: Calculate Remaining Stock
@@ -15,35 +16,33 @@ const calculateRemaining = (reports, product) => {
     const { parent, children } = reports || {};
 
     // 1. Opening Stock
-
-    const parentOp = val(parent?.openingStockQnt);
-    const childOp = children ? children.reduce((acc, c) => acc + val(c?.openingStockQnt), 0) : 0;
+    const parentOp = val(parent?.openingStockQnt || parent?.openingStock);
+    const childOp = children ? children.reduce((acc, c) => acc + val(c?.openingStockQnt || c?.openingStock), 0) : 0;
     const openingStock = parentOp + childOp;
 
-
     // 2. Helper to get total for a field (Parent * Unit + Children)
-    const getFieldTotal = (field) => {
-        const pVal = val(parent?.[field]);
-        const cVal = children ? children.reduce((acc, c) => acc + val(c?.[field]), 0) : 0;
+    const getFieldTotal = (field, altField) => {
+        const pVal = val(parent?.[field] || (altField ? parent?.[altField] : 0));
+        const cVal = children ? children.reduce((acc, c) => acc + val(c?.[field] || (altField ? c?.[altField] : 0)), 0) : 0;
 
-        // For Sales/Consumption, if children exist, only count children sales (ignore parent "main" count to avoid duplicates)
-        if (children && children.length > 0 && ['sales', 'staffMeal', 'dameged'].includes(field)) {
+        // For Sales/Consumption, if children exist, only count children sales
+        if (children && children.length > 0 && ['sales', 'staffMeal', 'dameged', 'damaged'].includes(field)) {
             return cVal;
         }
 
-        // اضرب الأب في الوحدة، واجمع الأبناء كما هم
         return (pVal * unit) + cVal;
     };
 
-    const totalRec = getFieldTotal('recieved');
+    const totalRec = getFieldTotal('recieved', 'received');
     const totalTrans = getFieldTotal('transfer');
+    const totalDirect = getFieldTotal('directTransfer');
     const totalAdd = getFieldTotal('add');
     const totalSales = getFieldTotal('sales');
     const totalStaff = getFieldTotal('staffMeal');
-    const totalDamaged = getFieldTotal('dameged');
+    const totalDamaged = getFieldTotal('dameged', 'damaged');
 
-    // 3. Calculation
-    const total = openingStock + totalRec + totalAdd - totalSales - totalStaff - totalTrans - totalDamaged;
+    // 3. Calculation: Inbound (Rec + Trans + Direct) are added.
+    const total = openingStock + totalRec + totalTrans + totalDirect + totalAdd - totalSales - totalStaff - totalDamaged;
 
     return isNaN(total) ? '-' : total;
 };
@@ -59,6 +58,7 @@ const AdminDashboard = () => {
     const [isStockModalOpen, setIsStockModalOpen] = useState(false);
     const [editingStockItem, setEditingStockItem] = useState(null);
     const [newStockValue, setNewStockValue] = useState('');
+    const [searchTerm, setSearchTerm] = useState('');
     const [settlementHistory, setSettlementHistory] = useState([]); // For Auto-Settle Verification
 
     const [reportDates, setReportDates] = useState([]); // Daily Report Dates
@@ -66,6 +66,16 @@ const AdminDashboard = () => {
     const [dailyReportData, setDailyReportData] = useState([]); // { productId: { ... } }
     const [showMonthlyReport, setShowMonthlyReport] = useState(false);
     const [showGlobalMonthlyReport, setShowGlobalMonthlyReport] = useState(false);
+    const [correctionProductId, setCorrectionProductId] = useState(null);
+    const [correctionProductObj, setCorrectionProductObj] = useState(null);
+    const [showCorrectionStandalone, setShowCorrectionStandalone] = useState(false);
+
+    // Cascading Update State
+    const [isCascadingModalOpen, setIsCascadingModalOpen] = useState(false);
+    const [cascadingProduct, setCascadingProduct] = useState(null);
+    const [cascadingField, setCascadingField] = useState('');
+    const [cascadingNewValue, setCascadingNewValue] = useState('');
+    const [isCascadingUpdating, setIsCascadingUpdating] = useState(false);
 
     const location = useLocation();
     const navigate = useNavigate();
@@ -84,6 +94,12 @@ const AdminDashboard = () => {
     const setActiveTab = (tab) => {
         setActiveTabState(tab);
         navigate(`/admin${tab === 'home' ? '' : `?tab=${tab}`}`);
+    };
+
+    const handleOpenCorrection = (product) => {
+        setCorrectionProductId(product.id);
+        setCorrectionProductObj(product);
+        setShowCorrectionStandalone(true);
     };
 
     // Data
@@ -624,7 +640,7 @@ const AdminDashboard = () => {
         }
     };
 
-  
+
 
     const handleSave = async (e) => {
         e.preventDefault();
@@ -962,11 +978,78 @@ const AdminDashboard = () => {
             setNewStockValue('');
             setSettlementHistory([]);
 
-        } catch (error) {
-            console.error("Error saving opening stock:", error);
-            showNotification('error', "حدث خطأ أثناء الحفظ");
         } finally {
             setIsSubmitting(false);
+        }
+    };
+
+    const handleExecuteCascadingUpdate = async () => {
+        if (!cascadingProduct || !cascadingField || cascadingNewValue === '') {
+            alert('يرجى التأكد من اختيار الحقل والقيمة الجديدة');
+            return;
+        }
+        if (!selectedBranch || !selectedReportDate || !selectedOrderType) {
+            alert('يرجى التأكد من اختيار الفرع والتاريخ');
+            return;
+        }
+        setIsCascadingUpdating(true);
+        try {
+            const start = new Date(`${selectedReportDate}T00:00:00`);
+            const end = new Date(`${selectedReportDate}T23:59:59.999`);
+            const q = query(
+                collection(db, "dailyReports"),
+                where("branchId", "==", selectedBranch),
+                where("productId", "==", cascadingProduct.id),
+                where("date", ">=", Timestamp.fromDate(start)),
+                where("date", "<=", Timestamp.fromDate(end))
+            );
+            const snap = await getDocs(q);
+            if (snap.empty) {
+                alert('لا يوجد سجل لهذا اليوم للبدء منه.');
+                setIsCascadingUpdating(false);
+                return;
+            }
+            const currentDoc = snap.docs[0];
+            const oldVal = Number(currentDoc.data()[cascadingField] || 0);
+            const newVal = Number(cascadingNewValue);
+            const difference = newVal - oldVal;
+            if (difference === 0) {
+                alert('القيمة الجديدة مطابقة للقديمة.');
+                setIsCascadingUpdating(false);
+                return;
+            }
+            const batch = writeBatch(db);
+            const futureQ = query(
+                collection(db, "dailyReports"),
+                where("branchId", "==", selectedBranch),
+                where("productId", "==", cascadingProduct.id),
+                where("date", ">=", Timestamp.fromDate(start)),
+                orderBy("date", "asc")
+            );
+            const futureSnap = await getDocs(futureQ);
+            futureSnap.docs.forEach((docSnap, index) => {
+                const data = docSnap.data();
+                const updates = {};
+                if (index === 0) updates[cascadingField] = newVal;
+                if (index === 0) {
+                    if (data.closeStock !== undefined) updates.closeStock = Number(data.closeStock || 0) + difference;
+                } else {
+                    if (data.openingStockQnt !== undefined) updates.openingStockQnt = Number(data.openingStockQnt || 0) + difference;
+                    if (data.closeStock !== undefined) updates.closeStock = Number(data.closeStock || 0) + difference;
+                }
+                if (Object.keys(updates).length > 0) batch.update(docSnap.ref, updates);
+            });
+            await batch.commit();
+            const triggerRef = doc(collection(db, "dailyReportsUpdates"));
+            await setDoc(triggerRef, { branchId: selectedBranch, typeId: selectedOrderType, updatedAt: serverTimestamp() });
+            alert('تم التحديث المتسلسل بنجاح!');
+            setIsCascadingModalOpen(false);
+            window.location.reload();
+        } catch (error) {
+            console.error("Cascading Update Error:", error);
+            alert("حدث خطأ أثناء التحديث المتسلسل.");
+        } finally {
+            setIsCascadingUpdating(false);
         }
     };
 
@@ -1006,389 +1089,389 @@ const AdminDashboard = () => {
             ) : (
                 <>
 
-            {/* Filters Section */}
-            <div className="card" style={{ marginBottom: '2rem' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+                    {/* Filters Section */}
+                    <div className="card" style={{ marginBottom: '2rem' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
 
-                    {/* City Select */}
-                    {/* City Select */}
-                    <div className="input-group" style={{ marginBottom: 0 }}>
-                        <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>المدينة</label>
-                        <select
-                            className="input-field"
-                            value={selectedCity}
-                            onChange={(e) => {
-                                setSelectedCity(e.target.value);
-                                setSelectedBranch(''); // Reset branch on city change
-                            }}
-                        >
-                            <option value="ryad">الرياض (Riyadh)</option>
-                            <option value="other">خارج الرياض (Outside Riyadh)</option>
-                        </select>
+                            {/* City Select */}
+                            {/* City Select */}
+                            <div className="input-group" style={{ marginBottom: 0 }}>
+                                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>المدينة</label>
+                                <select
+                                    className="input-field"
+                                    value={selectedCity}
+                                    onChange={(e) => {
+                                        setSelectedCity(e.target.value);
+                                        setSelectedBranch(''); // Reset branch on city change
+                                    }}
+                                >
+                                    <option value="ryad">الرياض (Riyadh)</option>
+                                    <option value="other">خارج الرياض (Outside Riyadh)</option>
+                                </select>
+                            </div>
+
+                            {/* Branch Select (Dependent on City) */}
+                            <div className="input-group" style={{ marginBottom: 0 }}>
+                                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>الفرع</label>
+                                <select
+                                    className="input-field"
+                                    value={selectedBranch}
+                                    onChange={(e) => setSelectedBranch(e.target.value)}
+                                >
+                                    <option value="">-- اختر الفرع --</option>
+                                    {branches
+                                        .filter(b => b.city === selectedCity || (!b.city && selectedCity === 'ryad')) // Default to ryad if city missing, or match exact
+                                        .map(branch => (
+                                            <option key={branch.id} value={branch.id}>
+                                                {branch.name || branch.id}
+                                            </option>
+                                        ))
+                                    }
+                                </select>
+                            </div>
+
+                            {/* Order Type Select */}
+                            <div className="input-group" style={{ marginBottom: 0 }}>
+                                <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>نوع الطلبية</label>
+                                <select
+                                    className="input-field"
+                                    value={selectedOrderType}
+                                    onChange={(e) => setSelectedOrderType(e.target.value)}
+                                >
+                                    <option value="">-- اختر النوع --</option>
+                                    {orderTypes
+                                        .filter(t => activeTab === 'reports' ? t.name.includes('يومي') : true)
+                                        .map(t => (
+                                            <option key={t.id} value={t.id}>{t.name}</option>
+                                        ))
+                                    }
+                                </select>
+                            </div>
+
+                            {/* Daily Report Date Select (Dynamic) */}
+                            {activeTab === 'reports' && reportDates.length > 0 && (
+                                <div className="input-group" style={{ marginBottom: 0 }}>
+                                    <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>تاريخ التقرير</label>
+                                    <select
+                                        className="input-field"
+                                        value={selectedReportDate}
+                                        onChange={(e) => {
+                                            console.log('selectedTypeId', selectedOrderType);
+                                            console.log('selectedBranchId', selectedBranch);
+
+
+                                            setSelectedReportDate(e.target.value)
+                                        }}
+                                    >
+                                        <option value="">-- اختر التاريخ --</option>
+                                        {reportDates.map(report => (
+                                            <option key={report.id} value={report.date}>
+                                                {report.date}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            )}
+                        </div>
                     </div>
 
-                    {/* Branch Select (Dependent on City) */}
-                    <div className="input-group" style={{ marginBottom: 0 }}>
-                        <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>الفرع</label>
-                        <select
-                            className="input-field"
-                            value={selectedBranch}
-                            onChange={(e) => setSelectedBranch(e.target.value)}
-                        >
-                            <option value="">-- اختر الفرع --</option>
-                            {branches
-                                .filter(b => b.city === selectedCity || (!b.city && selectedCity === 'ryad')) // Default to ryad if city missing, or match exact
-                                .map(branch => (
-                                    <option key={branch.id} value={branch.id}>
-                                        {branch.name || branch.id}
-                                    </option>
-                                ))
-                            }
-                        </select>
+                    {/* Products Action Bar */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
+                        <h2 style={{ fontSize: '1.5rem', color: activeTab === 'reports' ? '#10b981' : 'hsl(var(--color-primary))', fontWeight: '700' }}>
+                            {activeTab === 'reports' ? 'التقارير المتاحة' : `قائمة المنتجات (${products.length})`}
+                        </h2>
+                        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                            {/* Search Input */}
+                            <div style={{ position: 'relative' }}>
+                                <input
+                                    type="text"
+                                    placeholder="بحث عن منتج..."
+                                    value={searchTerm}
+                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                    style={{
+                                        padding: '0.6rem 1rem 0.6rem 2.5rem',
+                                        borderRadius: '8px',
+                                        border: '1px solid #e2e8f0',
+                                        width: '250px',
+                                        fontSize: '0.9rem',
+                                        outline: 'none',
+                                        transition: 'all 0.2s'
+                                    }}
+                                    onFocus={(e) => e.target.style.borderColor = 'hsl(var(--color-primary))'}
+                                    onBlur={(e) => e.target.style.borderColor = '#e2e8f0'}
+                                />
+                                <span style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }}>🔍</span>
+                            </div>
+
+                            <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            {activeTab === 'products' && (
+                                <button
+                                    className="btn btn-primary"
+                                    onClick={() => handleOpenModal()}
+                                    disabled={!selectedOrderType}
+                                    title={!selectedOrderType ? "اختر نوع الطلبية أولاً" : ""}
+                                >
+                                    + إضافة منتج جديد
+                                </button>
+                            )}
+                            {activeTab === 'reports' && selectedCity && selectedBranch && selectedOrderType && (
+                                <button
+                                    className="btn"
+                                    style={{
+                                        backgroundColor: showMonthlyReport ? '#ef4444' : '#0284c7',
+                                        color: 'white',
+                                        border: 'none'
+                                    }}
+                                    onClick={() => setShowMonthlyReport(!showMonthlyReport)}
+                                >
+                                    {showMonthlyReport ? 'إخفاء تقرير الشهر' : 'تقرير الشهر كامل'}
+                                </button>
+                            )}
+                            {activeTab === 'reports' && selectedCity && selectedOrderType && (
+                                <button
+                                    className="btn"
+                                    style={{
+                                        backgroundColor: showGlobalMonthlyReport ? '#ef4444' : '#10b981',
+                                        color: 'white',
+                                        border: 'none'
+                                    }}
+                                    onClick={() => {
+                                        setShowGlobalMonthlyReport(!showGlobalMonthlyReport);
+                                        if (!showGlobalMonthlyReport) setShowMonthlyReport(false);
+                                    }}
+                                >
+                                    {showGlobalMonthlyReport ? 'إخفاء التقرير الشامل' : 'تقرير الفروع الشامل'}
+                                </button>
+                            )}
+                        </div>
+                        </div>
                     </div>
 
-                    {/* Order Type Select */}
-                    <div className="input-group" style={{ marginBottom: 0 }}>
-                        <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>نوع الطلبية</label>
-                        <select
-                            className="input-field"
-                            value={selectedOrderType}
-                            onChange={(e) => setSelectedOrderType(e.target.value)}
-                        >
-                            <option value="">-- اختر النوع --</option>
-                            {orderTypes
-                                .filter(t => activeTab === 'reports' ? t.name.includes('يومي') : true)
-                                .map(t => (
-                                    <option key={t.id} value={t.id}>{t.name}</option>
-                                ))
-                            }
-                        </select>
-                    </div>
-
-                    {/* Daily Report Date Select (Dynamic) */}
-                    {activeTab === 'reports' && reportDates.length > 0 && (
-                        <div className="input-group" style={{ marginBottom: 0 }}>
-                            <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>تاريخ التقرير</label>
-                            <select
-                                className="input-field"
-                                value={selectedReportDate}
-                                onChange={(e) => {
-                                    console.log('selectedTypeId', selectedOrderType);
-                                    console.log('selectedBranchId', selectedBranch);
-
-
-                                    setSelectedReportDate(e.target.value)
+                    {/* Monthly Report View */}
+                    {showMonthlyReport && selectedCity && selectedBranch && selectedOrderType && (
+                        <div style={{ marginBottom: '2rem' }}>
+                            <MonthlyBranchReport
+                                branchId={selectedBranch}
+                                branches={branches.filter(b => b.city === selectedCity || (!b.city && selectedCity === 'ryad'))}
+                                city={selectedCity}
+                                typeId={selectedOrderType}
+                                products={products}
+                                onClose={() => {
+                                    setShowMonthlyReport(false);
+                                    setCorrectionProductId(null);
+                                    setCorrectionProductObj(null);
                                 }}
-                            >
-                                <option value="">-- اختر التاريخ --</option>
-                                {reportDates.map(report => (
-                                    <option key={report.id} value={report.date}>
-                                        {report.date}
-                                    </option>
-                                ))}
-                            </select>
+                                branchName={branches.find(b => b.id === selectedBranch)?.name || ''}
+                                onOpenCorrection={(product) => handleOpenCorrection(product)}
+                            />
                         </div>
                     )}
-                </div>
-            </div>
 
-            {/* Products Action Bar */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
-                <h2 style={{ fontSize: '1.5rem', color: activeTab === 'reports' ? '#10b981' : 'hsl(var(--color-primary))', fontWeight: '700' }}>
-                    {activeTab === 'reports' ? 'التقارير المتاحة' : `قائمة المنتجات (${products.length})`}
-                </h2>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    {activeTab === 'products' && (
-                        <button
-                            className="btn btn-primary"
-                            onClick={() => handleOpenModal()}
-                            disabled={!selectedOrderType}
-                            title={!selectedOrderType ? "اختر نوع الطلبية أولاً" : ""}
-                        >
-                            + إضافة منتج جديد
-                        </button>
+                    {/* Global Monthly Report View */}
+                    {showGlobalMonthlyReport && selectedCity && selectedOrderType && (
+                        <div style={{ marginBottom: '2rem' }}>
+                            <GlobalMonthlyReport
+                                branches={branches}
+                                cityName={selectedCity}
+                                typeId={selectedOrderType}
+                                initialMonth={new Date().toISOString().substring(0, 7)}
+                                onClose={() => setShowGlobalMonthlyReport(false)}
+                                products={products}
+                            />
+                        </div>
                     )}
-                    {activeTab === 'reports' && selectedCity && selectedBranch && selectedOrderType && (
-                        <button
-                            className="btn"
-                            style={{
-                                backgroundColor: showMonthlyReport ? '#ef4444' : '#0284c7',
-                                color: 'white',
-                                border: 'none'
-                            }}
-                            onClick={() => setShowMonthlyReport(!showMonthlyReport)}
-                        >
-                            {showMonthlyReport ? 'إخفاء تقرير الشهر' : 'تقرير الشهر كامل'}
-                        </button>
-                    )}
-                    {activeTab === 'reports' && selectedCity && selectedOrderType && (
-                        <button
-                            className="btn"
-                            style={{
-                                backgroundColor: showGlobalMonthlyReport ? '#ef4444' : '#10b981',
-                                color: 'white',
-                                border: 'none'
-                            }}
-                            onClick={() => {
-                                setShowGlobalMonthlyReport(!showGlobalMonthlyReport);
-                                if (!showGlobalMonthlyReport) setShowMonthlyReport(false);
-                            }}
-                        >
-                            {showGlobalMonthlyReport ? 'إخفاء التقرير الشامل' : 'تقرير الفروع الشامل'}
-                        </button>
-                    )}
-                </div>
-            </div>
 
-            {/* Monthly Report View */}
-            {showMonthlyReport && selectedCity && selectedBranch && selectedOrderType && (
-                <div style={{ marginBottom: '2rem' }}>
-                    <MonthlyBranchReport
-                        branchId={selectedBranch}
-                        branches={branches.filter(b => b.city === selectedCity || (!b.city && selectedCity === 'ryad'))}
-                        city={selectedCity}
-                        typeId={selectedOrderType}
-                        products={products}
-                        onClose={() => setShowMonthlyReport(false)}
-                        branchName={branches.find(b => b.id === selectedBranch)?.name || ''}
-                    />
-                </div>
-            )}
+                    {/* Products Table */}
+                    <div className="card">
+                        {loadingProducts ? (
+                            <p style={{ textAlign: 'center', padding: '2rem' }}>جاري التحميل...</p>
+                        ) : !selectedOrderType ? (
+                            <p style={{ textAlign: 'center', padding: '2rem', color: 'hsl(var(--color-text-muted))' }}>الرجاء اختيار نوع الطلبية لعرض المنتجات</p>
+                        ) : products.length === 0 ? (
+                            <p style={{ textAlign: 'center', padding: '2rem', color: 'hsl(var(--color-text-muted))' }}>لا توجد منتجات مضافة لهذا التصنيف في هذه المدينة.</p>
+                        ) : (
+                            <div style={{ overflowX: 'auto', maxHeight: '70vh' }}>
+                                {/* Daily Report View */}
+                                {orderTypes.find(t => t.id === selectedOrderType)?.name.includes('يومي') ? (
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '900px', fontSize: '13px' }}>
+                                        <thead style={{ position: 'sticky', top: 0, zIndex: 10, backgroundColor: '#fff', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
+                                            <tr className="f-h" style={{ backgroundColor: '#f8f9fa' }}>
+                                                <th style={{ position: 'sticky', left: 0, zIndex: 11, backgroundColor: '#f8f9fa', padding: '10px', borderBottom: '2px solid #dee2e6' }}>الاصناف</th>
+                                                <th style={{ width: '60px', padding: '10px', borderBottom: '2px solid #dee2e6' }}>افتتاحية الرصيد في هذا التاريخ</th>
+                                                <th style={{ width: '60px', padding: '10px', borderBottom: '2px solid #dee2e6', color: '#64748b', fontSize: '11px' }}>الموجودة فعلياً</th>
+                                                {activeTab === 'reports' && (
+                                                    <>
+                                                        <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>المستلم / تحويل</th>
+                                                        <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>الجرد</th>
+                                                        <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>مبيعات</th>
+                                                        <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>وجبة موظف</th>
+                                                        <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>التالف</th>
+                                                        <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>المتبقي</th>
+                                                    </>
+                                                )}
+                                                {activeTab === 'products' && (
+                                                    <th style={{ width: '80px', padding: '10px', borderBottom: '2px solid #dee2e6' }}>إجراءات</th>
+                                                )}
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {(() => {
+                                                const searchLower = searchTerm.trim().toLowerCase();
 
-            {/* Global Monthly Report View */}
-            {showGlobalMonthlyReport && selectedCity && selectedOrderType && (
-                <div style={{ marginBottom: '2rem' }}>
-                    <GlobalMonthlyReport
-                        branches={branches}
-                        cityName={selectedCity}
-                        typeId={selectedOrderType}
-                        initialMonth={new Date().toISOString().substring(0, 7)}
-                        onClose={() => setShowGlobalMonthlyReport(false)}
-                        products={products}
-                    />
-                </div>
-            )}
+                                                const roots = products.filter(p => !p.parentProduct).filter(parent => {
+                                                    if (!searchLower) return true;
+                                                    const matchesParent = parent.name.toLowerCase().includes(searchLower);
+                                                    const children = products.filter(p => p.parentProduct === parent.id);
+                                                    const matchesAnyChild = children.some(c => c.name.toLowerCase().includes(searchLower));
+                                                    return matchesParent || matchesAnyChild;
+                                                });
 
-            {/* Products Table */}
-            <div className="card">
-                {loadingProducts ? (
-                    <p style={{ textAlign: 'center', padding: '2rem' }}>جاري التحميل...</p>
-                ) : !selectedOrderType ? (
-                    <p style={{ textAlign: 'center', padding: '2rem', color: 'hsl(var(--color-text-muted))' }}>الرجاء اختيار نوع الطلبية لعرض المنتجات</p>
-                ) : products.length === 0 ? (
-                    <p style={{ textAlign: 'center', padding: '2rem', color: 'hsl(var(--color-text-muted))' }}>لا توجد منتجات مضافة لهذا التصنيف في هذه المدينة.</p>
-                ) : (
-                    <div style={{ overflowX: 'auto', maxHeight: '70vh' }}>
-                        {/* Daily Report View */}
-                        {orderTypes.find(t => t.id === selectedOrderType)?.name.includes('يومي') ? (
-                            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '900px', fontSize: '13px' }}>
-                                <thead style={{ position: 'sticky', top: 0, zIndex: 10, backgroundColor: '#fff', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
-                                    <tr className="f-h" style={{ backgroundColor: '#f8f9fa' }}>
-                                        <th style={{ position: 'sticky', left: 0, zIndex: 11, backgroundColor: '#f8f9fa', padding: '10px', borderBottom: '2px solid #dee2e6' }}>الاصناف</th>
-                                        <th style={{ width: '60px', padding: '10px', borderBottom: '2px solid #dee2e6' }}>افتتاحية الرصيد في هذا التاريخ</th>
-                                        <th style={{ width: '60px', padding: '10px', borderBottom: '2px solid #dee2e6', color: '#64748b', fontSize: '11px' }}>الموجودة فعلياً</th>
-                                        {activeTab === 'reports' && (
-                                            <>
-                                                <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>المستلم</th>
-                                                <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>الجرد</th>
-                                                <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>مبيعات</th>
-                                                <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>وجبة موظف</th>
-                                                <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>تحويل %</th>
-                                                <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>التالف</th>
-                                                <th style={{ padding: '10px', borderBottom: '2px solid #dee2e6' }}>المتبقي</th>
-                                            </>
-                                        )}
-                                        {activeTab === 'products' && (
-                                            <th style={{ width: '80px', padding: '10px', borderBottom: '2px solid #dee2e6' }}>إجراءات</th>
-                                        )}
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {(() => {
-                                        // 1. Group Data
-                                        const roots = products.filter(p => !p.parentProduct);
-                                        const getChildren = (parentId) => products.filter(p => p.parentProduct === parentId);
+                                                const getChildren = (parentId) => products.filter(p => p.parentProduct === parentId);
 
-                                        return roots.map((item, index) => {
-                                            const children = getChildren(item.id);
-                                            const hasChildren = children.length > 0;
+                                                return roots.map((item, index) => {
+                                                    const children = getChildren(item.id);
+                                                    const hasChildren = children.length > 0;
+                                                    const dataRows = hasChildren ? children : [item];
 
-                                            // The list to render data rows for: either [item] (if no children) or [children...]
-                                            // As per user design, if has children, the rows are the children. The parent is just a side label.
-                                            const dataRows = hasChildren ? children : [item];
-
-                                            return (
-                                                <tr key={item.id} style={{ borderBottom: '1px solid #dee2e6', backgroundColor: index % 2 === 0 ? '#fff' : '#f9fafb' }}>
-                                                    {/* Sticky Name Column */}
-                                                    <td style={{
-                                                        position: 'sticky', left: 0, padding: 0,
-                                                        backgroundColor: index % 2 === 0 ? '#fff' : '#f9fafb',
-                                                        borderRight: '1px solid #dee2e6',
-                                                        zIndex: 5
-                                                    }}>
-                                                        {hasChildren ? (
-                                                            <div style={{ display: 'flex', alignItems: 'stretch', height: '100%' }}>
-                                                                {/* Parent Label Vertical */}
-                                                                <div style={{
-                                                                    writingMode: 'vertical-rl',
-                                                                    transform: 'rotate(180deg)',
-                                                                    fontWeight: 'bold',
-                                                                    fontSize: '13px',
-                                                                    padding: '8px',
-                                                                    textAlign: 'center',
-                                                                    borderLeft: '1px solid #ccc', // RTL flip: borderRight in user code might mean left in LTR, or right in RTL. Assuming RTL layout in app? 
-                                                                    // User style: border-right. If dir=rtl, this is towards center. 
-                                                                    // React defaults LTR usually unless set. I'll stick to user logic but use borderRight.
-                                                                    borderLeft: '1px solid #ccc', // Adjusted for visual separation
-                                                                    backgroundColor: '#f1f1f1',
-                                                                    minWidth: '30px',
-                                                                    display: 'flex',
-                                                                    alignItems: 'center',
-                                                                    justifyContent: 'center',
-                                                                    cursor: 'pointer'
-                                                                }} onClick={() => {
-                                                                    const report = dailyReportData.find(d => d.productId === item.id);
-                                                                    console.log('Raw Report (Parent):', report);
-                                                                }}>
-                                                                    {item.name}
-                                                                    {activeTab === 'products' && (
-                                                                        <div style={{ marginTop: '5px', display: 'flex', gap: '4px', fontSize: '10px' }}>
-                                                                            <span title="تعديل الأب" onClick={(e) => { e.stopPropagation(); handleOpenModal(item); }}>✏️</span>
-                                                                            <span title="حذف الأب" onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}>❌</span>
-                                                                        </div>
-                                                                    )}
-                                                                </div>
-                                                                {/* Children Names Stack */}
-                                                                <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, fontSize: '12px' }}>
-                                                                    {children.map((sub, idx) => (
-                                                                        <div key={sub.id} style={{
-                                                                            padding: '6px 8px',
-                                                                            borderBottom: idx === children.length - 1 ? 'none' : '1px solid #eee',
-                                                                            height: '40px', // Fixed height for alignment
-                                                                            display: 'flex', alignItems: 'center',
-                                                                            cursor: 'pointer'
+                                                    return (
+                                                        <tr key={item.id} style={{ borderBottom: '1px solid #dee2e6', backgroundColor: index % 2 === 0 ? '#fff' : '#f9fafb' }}>
+                                                            {/* Sticky Name Column */}
+                                                            <td style={{
+                                                                position: 'sticky', left: 0, padding: 0,
+                                                                backgroundColor: index % 2 === 0 ? '#fff' : '#f9fafb',
+                                                                borderRight: '1px solid #dee2e6',
+                                                                zIndex: 5
+                                                            }}>
+                                                                {hasChildren ? (
+                                                                    <div style={{ display: 'flex', alignItems: 'stretch', height: '100%' }}>
+                                                                        {/* Parent Label Vertical */}
+                                                                        <div style={{
+                                                                            writingMode: 'vertical-rl',
+                                                                            transform: 'rotate(180deg)',
+                                                                            fontWeight: 'bold',
+                                                                            fontSize: '13px',
+                                                                            padding: '8px',
+                                                                            textAlign: 'center',
+                                                                            borderLeft: '1px solid #ccc',
+                                                                            backgroundColor: '#f1f1f1',
+                                                                            minWidth: '35px',
+                                                                            display: 'flex',
+                                                                            flexDirection: 'column',
+                                                                            alignItems: 'center',
+                                                                            justifyContent: 'center',
+                                                                            cursor: 'pointer',
+                                                                            position: 'relative'
                                                                         }} onClick={() => {
-                                                                            const report = dailyReportData.find(d => d.productId === sub.id);
-                                                                            console.log('Raw Report (Child):', report);
+                                                                            const report = dailyReportData.find(d => d.productId === item.id);
+                                                                            console.log('Raw Report (Parent):', report);
                                                                         }}>
-                                                                            {sub.name}
+                                                                            <div style={{ flex: 1 }}>{item.name}</div>
+                                                                            <button
+                                                                                onClick={(e) => { e.stopPropagation(); handleOpenCorrection(item); }}
+                                                                                style={{ background: '#fff', border: '1px solid #ccc', borderRadius: '50%', cursor: 'pointer', fontSize: '14px', width: '25px', height: '25px', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '5px 0' }}
+                                                                                title="تصحيح التقرير للمنتج وأبنائه"
+                                                                            >
+                                                                                ⚙️
+                                                                            </button>
+                                                                            {activeTab === 'products' && (
+                                                                                <div style={{ marginTop: '5px', display: 'flex', gap: '4px', fontSize: '10px' }}>
+                                                                                    <span title="تعديل الأب" onClick={(e) => { e.stopPropagation(); handleOpenModal(item); }}>✏️</span>
+                                                                                    <span title="حذف الأب" onClick={(e) => { e.stopPropagation(); handleDelete(item.id); }}>❌</span>
+                                                                                </div>
+                                                                            )}
                                                                         </div>
-                                                                    ))}
-                                                                </div>
-                                                            </div>
-                                                        ) : (
-                                                            <div style={{ fontWeight: 'bold', fontSize: '13px', padding: '12px 8px', cursor: 'pointer' }}
-                                                                onClick={() => {
-                                                                    const report = dailyReportData.find(d => d.productId === item.id);
-                                                                    const op = openingStockData.find(d => d.productId === item.id);
-
-                                                                    console.log('Raw Report (Item):', report);
-                                                                    console.log('Raw OpenningStocj (Item):', op);
-
-                                                                }}>
-                                                                {item.name}
-                                                            </div>
-                                                        )}
-                                                    </td>
-
-                                                    {/* Common Data Columns Function */}
-                                                    {['openingStockQnt', 'actualOpening', 'recieved', 'add', 'sales', 'staffMeal', 'transfer', 'dameged', 'closeStock'].map(field => {
-                                                        
-                                                        if (activeTab === 'products' && !['openingStockQnt', 'actualOpening'].includes(field)) {
-                                                            return null;
-                                                        }
-
-                                                        const isParentField = ['openingStockQnt', 'actualOpening', 'recieved', 'transfer', 'closeStock'].includes(field);
-
-                                                        // Case 1: Has Children & Field is Parent-Only -> Render Single Value for Parent
-                                                        if (hasChildren && isParentField) {
-                                                            const parentReport = dailyReportData.find(d => d.productId === item.id) || {};
-
-                                                            let displayValue = '-';
-                                                            if (field === 'remaining') {
-                                                                const childReports = children.map(c => dailyReportData.find(d => d.productId === c.id));
-                                                                displayValue = calculateRemaining({ parent: parentReport, children: childReports }, item);
-                                                            } else if (field === 'actualOpening') {
-                                                                const oItem = openingStockData?.find(o => o.productId === item.id && o.branchId === selectedBranch);
-                                                                displayValue = oItem ? oItem.openingStockQnt : '-';
-                                                            } else {
-                                                                displayValue = parentReport[field] !== undefined ? parentReport[field] : '';
-                                                            }
-
-                                                            return (
-                                                                <td key={field} style={{ padding: 0, verticalAlign: 'middle', borderLeft: '1px solid #eee', textAlign: 'center' }}>
-                                                                    <div style={{
-                                                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                                                        height: '100%', minHeight: children.length * 40 + 'px',
-                                                                        fontWeight: 'bold', fontSize: '14px'
-                                                                    }}>
-                                                                        {displayValue}
-                                                                        {field === 'remaining' && (() => {
-                                                                            const storedClose = (Number(parentReport?.closeStock) || 0) +
-                                                                                (children ? children.reduce((acc, c) => {
-                                                                                    const cr = dailyReportData.find(d => d.productId === c.id);
-                                                                                    return acc + (Number(cr?.closeStock) || 0);
-                                                                                }, 0) : 0);
-                                                                            const currentVal = Number(displayValue);
-                                                                            if (isNaN(currentVal)) return null;
-
-                                                                            const isMatch = Math.abs(currentVal - storedClose) < 0.1;
-                                                                            return (
-                                                                                <span title={`المخزن: ${storedClose}`} style={{ marginRight: '5px', fontSize: '10px', cursor: 'help', display: 'flex', alignItems: 'center', gap: '2px' }}>
-                                                                                    {isMatch ? '✅' : '❓'}
-                                                                                    <span style={{ color: 'gray' }}>{storedClose}</span>
-                                                                                </span>
-                                                                            );
-                                                                        })()}
-                                                                        {field === 'actualOpening' && (
-                                                                            <span
-                                                                                style={{ cursor: 'pointer', marginLeft: '5px', color: '#64748b' }}
-                                                                                title="تعديل الرصيد الافتتاحي"
+                                                                        {/* Children Names Stack */}
+                                                                        <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, fontSize: '12px' }}>
+                                                                            {children.map((sub, idx) => (
+                                                                                <div key={sub.id} style={{
+                                                                                    padding: '6px 8px',
+                                                                                    borderBottom: idx === children.length - 1 ? 'none' : '1px solid #eee',
+                                                                                    height: '40px', // Fixed height for alignment
+                                                                                    display: 'flex', alignItems: 'center',
+                                                                                    cursor: 'pointer'
+                                                                                }} onClick={() => {
+                                                                                    const report = dailyReportData.find(d => d.productId === sub.id);
+                                                                                    console.log('Raw Report (Child):', report);
+                                                                                }}>
+                                                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                                                                                        <span>{sub.name}</span>
+                                                                                    </div>
+                                                                                </div>
+                                                                            ))}
+                                                                        </div>
+                                                                    </div>
+                                                                ) : (
+                                                                    <div style={{ fontWeight: 'bold', fontSize: '13px', padding: '12px 8px', cursor: 'pointer' }}
+                                                                        onClick={() => {
+                                                                            const report = dailyReportData.find(d => d.productId === item.id);
+                                                                            const op = openingStockData.find(d => d.productId === item.id);
+                                                                            console.log('Raw Report (Item):', report);
+                                                                        }}>
+                                                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                                                                            <span>{item.name}</span>
+                                                                            <button
                                                                                 onClick={(e) => {
                                                                                     e.stopPropagation();
-                                                                                    handleOpenStockModal(item, displayValue);
+                                                                                    // If it's a child, open parent's correction
+                                                                                    if (item.parentProduct) {
+                                                                                        const parent = products.find(p => p.id === item.parentProduct);
+                                                                                        if (parent) handleOpenCorrection(parent);
+                                                                                        else handleOpenCorrection(item);
+                                                                                    } else {
+                                                                                        handleOpenCorrection(item);
+                                                                                    }
                                                                                 }}
+                                                                                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '14px', padding: '2px' }}
+                                                                                title="تصحيح التقرير"
                                                                             >
-                                                                                ✏️
-                                                                            </span>
-                                                                        )}
+                                                                                ⚙️
+                                                                            </button>
+                                                                        </div>
                                                                     </div>
-                                                                </td>
-                                                            );
-                                                        }
+                                                                )}
+                                                            </td>
 
-                                                        // Case 2: Standard Child/Item Rendering
-                                                        return (
-                                                            <td key={field} style={{ padding: 0, verticalAlign: 'top', borderLeft: '1px solid #eee' }}>
-                                                                <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                                                                    {dataRows.map((rowItem, idx) => {
-                                                                        const report = dailyReportData.find(d => d.productId === rowItem.id) || {};
+                                                            {/* Common Data Columns Function */}
+                                                            {['openingStockQnt', 'actualOpening', 'recieved', 'add', 'sales', 'staffMeal', 'dameged', 'closeStock'].map(field => {
 
-                                                                        // Value Logic
-                                                                        let displayValue = '-';
-                                                                        if (field === 'remaining') {
-                                                                            displayValue = calculateRemaining({ parent: report }, rowItem);
-                                                                        } else if (field === 'actualOpening') {
-                                                                            const oItem = openingStockData?.find(o => o.productId === rowItem.id && o.branchId === selectedBranch);
-                                                                            displayValue = oItem ? oItem.openingStockQnt : '-';
-                                                                        } else {
-                                                                            displayValue = report[field] !== undefined ? report[field] : '';
-                                                                        }
+                                                                if (activeTab === 'products' && !['openingStockQnt', 'actualOpening'].includes(field)) {
+                                                                    return null;
+                                                                }
 
-                                                                        return (
-                                                                            <div key={rowItem.id} style={{
-                                                                                padding: '6px 8px',
-                                                                                borderBottom: idx === dataRows.length - 1 ? 'none' : '1px solid #eee',
-                                                                                height: hasChildren ? '40px' : 'auto',
+                                                                const isParentField = ['openingStockQnt', 'actualOpening', 'recieved', 'closeStock'].includes(field);
+
+                                                                // Case 1: Has Children & Field is Parent-Only -> Render Single Value for Parent
+                                                                if (hasChildren && isParentField) {
+                                                                    const parentReport = dailyReportData.find(d => d.productId === item.id) || {};
+
+                                                                    let displayValue = '-';
+                                                                    if (field === 'closeStock') {
+                                                                        const childReports = children.map(c => dailyReportData.find(d => d.productId === c.id));
+                                                                        displayValue = calculateRemaining({ parent: parentReport, children: childReports }, item);
+                                                                    } else if (field === 'actualOpening') {
+                                                                        const oItem = openingStockData?.find(o => o.productId === item.id && o.branchId === selectedBranch);
+                                                                        displayValue = oItem ? oItem.openingStockQnt : '-';
+                                                                    } else if (field === 'recieved') {
+                                                                        displayValue = (Number(parentReport.recieved || parentReport.received || 0) + Number(parentReport.transfer || 0) + Number(parentReport.directTransfer || 0));
+                                                                    } else {
+                                                                        displayValue = parentReport[field] !== undefined ? parentReport[field] : (field === 'dameged' ? parentReport.damaged : '');
+                                                                    }
+
+                                                                    return (
+                                                                        <td key={field} style={{ padding: 0, verticalAlign: 'middle', borderLeft: '1px solid #eee', textAlign: 'center' }}>
+                                                                            <div style={{
                                                                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                                                                fontWeight: field === 'closeStock' ? 'bold' : 'normal',
-                                                                                color: field === 'sales' ? '#22c55e' : 'inherit'
+                                                                                height: '100%', minHeight: children.length * 40 + 'px',
+                                                                                fontWeight: 'bold', fontSize: '14px'
                                                                             }}>
                                                                                 {displayValue}
-                                                                                {field === 'remaining' && (() => {
-                                                                                    const storedClose = Number(report?.closeStock) || 0;
+                                                                                {field === 'closeStock' && (() => {
+                                                                                    const storedClose = (Number(parentReport?.closeStock) || 0) +
+                                                                                        (children ? children.reduce((acc, c) => {
+                                                                                            const cr = dailyReportData.find(d => d.productId === c.id);
+                                                                                            return acc + (Number(cr?.closeStock) || 0);
+                                                                                        }, 0) : 0);
                                                                                     const currentVal = Number(displayValue);
-                                                                                    // Show verification only if both are numbers (handles '-' case)
                                                                                     if (isNaN(currentVal)) return null;
 
                                                                                     const isMatch = Math.abs(currentVal - storedClose) < 0.1;
@@ -1401,131 +1484,202 @@ const AdminDashboard = () => {
                                                                                 })()}
                                                                                 {field === 'actualOpening' && (
                                                                                     <span
-                                                                                        style={{ cursor: 'pointer', marginLeft: '5px', color: '#64748b', fontSize: '10px' }}
+                                                                                        style={{ cursor: 'pointer', marginLeft: '5px', color: '#64748b' }}
                                                                                         title="تعديل الرصيد الافتتاحي"
                                                                                         onClick={(e) => {
                                                                                             e.stopPropagation();
-                                                                                            handleOpenStockModal(rowItem, displayValue);
+                                                                                            handleOpenStockModal(item, displayValue);
                                                                                         }}
                                                                                     >
                                                                                         ✏️
                                                                                     </span>
                                                                                 )}
                                                                             </div>
-                                                                        );
-                                                                    })}
-                                                                </div>
-                                                            </td>
-                                                        );
-                                                    })}
+                                                                        </td>
+                                                                    );
+                                                                }
 
-                                                    {/* Actions Column */}
-                                                    {activeTab === 'products' && (
-                                                        <td style={{ padding: 0, verticalAlign: 'top', borderLeft: '1px solid #eee' }}>
-                                                            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                                                                {dataRows.map((rowItem, idx) => (
-                                                                    <div key={rowItem.id} style={{
-                                                                        padding: '6px 8px',
-                                                                        borderBottom: idx === dataRows.length - 1 ? 'none' : '1px solid #eee',
-                                                                        height: hasChildren ? '40px' : 'auto',
-                                                                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px'
-                                                                    }}>
-                                                                        <button
-                                                                            onClick={() => handleOpenModal(rowItem)}
-                                                                            style={{
-                                                                                background: 'none', border: 'none', cursor: 'pointer',
-                                                                                fontSize: '1.2em', padding: '0 4px'
-                                                                            }}
-                                                                            title="تعديل"
-                                                                        >
-                                                                            ✏️
-                                                                        </button>
-                                                                        <button
-                                                                            onClick={() => handleDelete(rowItem.id)}
-                                                                            style={{
-                                                                                background: 'none', border: 'none', cursor: 'pointer',
-                                                                                fontSize: '1em', padding: '0 4px', opacity: 0.7
-                                                                            }}
-                                                                            title="حذف"
-                                                                        >
-                                                                            ❌
-                                                                        </button>
+                                                                // Case 2: Standard Child/Item Rendering
+                                                                return (
+                                                                    <td key={field} style={{ padding: 0, verticalAlign: 'top', borderLeft: '1px solid #eee' }}>
+                                                                        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                                                                            {dataRows.map((rowItem, idx) => {
+                                                                                const report = dailyReportData.find(d => d.productId === rowItem.id) || {};
+
+                                                                                // Value Logic
+                                                                                let displayValue = '-';
+                                                                                if (field === 'closeStock') {
+                                                                                    displayValue = calculateRemaining({ parent: report }, rowItem);
+                                                                                } else if (field === 'actualOpening') {
+                                                                                    const oItem = openingStockData?.find(o => o.productId === rowItem.id && o.branchId === selectedBranch);
+                                                                                    displayValue = oItem ? oItem.openingStockQnt : '-';
+                                                                                } else {
+                                                                                    displayValue = report[field] !== undefined ? report[field] : (field === 'dameged' ? report.damaged : '');
+                                                                                    if (field === 'recieved' && displayValue === '') displayValue = report.received || '';
+                                                                                }
+
+                                                                                return (
+                                                                                    <div key={rowItem.id} style={{
+                                                                                        padding: '6px 8px',
+                                                                                        borderBottom: idx === dataRows.length - 1 ? 'none' : '1px solid #eee',
+                                                                                        height: hasChildren ? '40px' : 'auto',
+                                                                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                                                                        fontWeight: field === 'closeStock' ? 'bold' : 'normal',
+                                                                                        color: field === 'sales' ? '#22c55e' : 'inherit'
+                                                                                    }}>
+                                                                                        {displayValue}
+                                                                                        {field === 'closeStock' && (() => {
+                                                                                            const storedClose = Number(report?.closeStock) || 0;
+                                                                                            const currentVal = Number(displayValue);
+                                                                                            // Show verification only if both are numbers (handles '-' case)
+                                                                                            if (isNaN(currentVal)) return null;
+
+                                                                                            const isMatch = Math.abs(currentVal - storedClose) < 0.1;
+                                                                                            return (
+                                                                                                <span title={`المخزن: ${storedClose}`} style={{ marginRight: '5px', fontSize: '10px', cursor: 'help', display: 'flex', alignItems: 'center', gap: '2px' }}>
+                                                                                                    {isMatch ? '✅' : '❓'}
+                                                                                                    <span style={{ color: 'gray' }}>{storedClose}</span>
+                                                                                                </span>
+                                                                                            );
+                                                                                        })()}
+                                                                                        {field === 'actualOpening' && (
+                                                                                            <span
+                                                                                                style={{ cursor: 'pointer', marginLeft: '5px', color: '#64748b', fontSize: '10px' }}
+                                                                                                title="تعديل الرصيد الافتتاحي"
+                                                                                                onClick={(e) => {
+                                                                                                    e.stopPropagation();
+                                                                                                    handleOpenStockModal(rowItem, displayValue);
+                                                                                                }}
+                                                                                            >
+                                                                                                ✏️
+                                                                                            </span>
+                                                                                        )}
+                                                                                    </div>
+                                                                                );
+                                                                            })}
+                                                                        </div>
+                                                                    </td>
+                                                                );
+                                                            })}
+
+                                                            {/* Actions Column */}
+                                                            {activeTab === 'products' && (
+                                                                <td style={{ padding: 0, verticalAlign: 'top', borderLeft: '1px solid #eee' }}>
+                                                                    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                                                                        {dataRows.map((rowItem, idx) => (
+                                                                            <div key={rowItem.id} style={{
+                                                                                padding: '6px 8px',
+                                                                                borderBottom: idx === dataRows.length - 1 ? 'none' : '1px solid #eee',
+                                                                                height: hasChildren ? '40px' : 'auto',
+                                                                                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px'
+                                                                            }}>
+                                                                                <button
+                                                                                    onClick={() => handleOpenModal(rowItem)}
+                                                                                    style={{
+                                                                                        background: 'none', border: 'none', cursor: 'pointer',
+                                                                                        fontSize: '1.2em', padding: '0 4px'
+                                                                                    }}
+                                                                                    title="تعديل"
+                                                                                >
+                                                                                    ✏️
+                                                                                </button>
+                                                                                <button
+                                                                                    onClick={() => handleDelete(rowItem.id)}
+                                                                                    style={{
+                                                                                        background: 'none', border: 'none', cursor: 'pointer',
+                                                                                        fontSize: '1em', padding: '0 4px', opacity: 0.7
+                                                                                    }}
+                                                                                    title="حذف"
+                                                                                >
+                                                                                    ❌
+                                                                                </button>
+                                                                            </div>
+                                                                        ))}
                                                                     </div>
-                                                                ))}
-                                                            </div>
-                                                        </td>
-                                                    )}
-                                                </tr>
-                                            );
-                                        });
-                                    })()}
-                                </tbody>
-                            </table>
-                        ) : (
-                            // Standard Table
-                            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '600px' }}>
-                                <thead>
-                                    <tr style={{ backgroundColor: '#f8fafc', color: 'hsl(var(--color-text-muted))', textAlign: 'right' }}>
-                                        <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>الاسم</th>
-                                        <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>المنتج الأب</th>
-                                        <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>الترتيب</th>
-                                        <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>الوحدة</th>
-                                        <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>تاريخ الإنشاء</th>
-                                        <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>آخر تعديل</th>
-                                        <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>إجراءات</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {products.map((product) => {
-                                        const parentName = product.parentProduct
-                                            ? products.find(p => p.id === product.parentProduct)?.name || 'غير موجود'
-                                            : '-';
-
-                                        return (
-                                            <tr key={product.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                                                <td style={{ padding: '0.75rem', fontWeight: '500' }}>{product.name}</td>
-                                                <td style={{ padding: '0.75rem', color: 'hsl(var(--color-primary))', fontSize: '0.9rem' }}>{parentName}</td>
-                                                <td style={{ padding: '0.75rem' }}>{product.sortOrder || 0}</td>
-                                                <td style={{ padding: '0.75rem' }}>{product.unitF || product.unit || '-'}</td>
-                                                <td style={{ padding: '0.75rem', fontSize: '0.8rem', color: '#64748b' }}>
-                                                    {product.createdAt?.seconds ? new Date(product.createdAt.seconds * 1000).toLocaleDateString('en-GB') : '-'}
-                                                </td>
-                                                <td style={{ padding: '0.75rem', fontSize: '0.8rem', color: '#64748b' }}>
-                                                    {product.updatedAt?.seconds ? new Date(product.updatedAt.seconds * 1000).toLocaleDateString('en-GB') : '-'}
-                                                </td>
-                                                <td style={{ padding: '0.75rem', display: 'flex', gap: '0.5rem' }}>
-                                                    <button
-                                                        onClick={() => handleOpenModal(product)}
-                                                        style={{
-                                                            background: 'none', border: '1px solid #e2e8f0',
-                                                            padding: '0.25rem 0.5rem', borderRadius: '4px', cursor: 'pointer',
-                                                            color: 'hsl(var(--color-primary))'
-                                                        }}
-                                                    >
-                                                        تعديل
-                                                    </button>
-                                                    <button
-                                                        onClick={() => handleDelete(product.id)}
-                                                        style={{
-                                                            background: 'none', border: '1px solid #fee2e2',
-                                                            padding: '0.25rem 0.5rem', borderRadius: '4px', cursor: 'pointer',
-                                                            color: '#ef4444', backgroundColor: '#fef2f2'
-                                                        }}
-                                                    >
-                                                        حذف
-                                                    </button>
-                                                </td>
+                                                                </td>
+                                                            )}
+                                                        </tr>
+                                                    );
+                                                });
+                                            })()}
+                                        </tbody>
+                                    </table>
+                                ) : (
+                                    // Standard Table
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '600px' }}>
+                                        <thead>
+                                            <tr style={{ backgroundColor: '#f8fafc', color: 'hsl(var(--color-text-muted))', textAlign: 'right' }}>
+                                                <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>الاسم</th>
+                                                <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>المنتج الأب</th>
+                                                <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>الترتيب</th>
+                                                <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>الوحدة</th>
+                                                <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>تاريخ الإنشاء</th>
+                                                <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>آخر تعديل</th>
+                                                <th style={{ padding: '0.75rem', borderBottom: '1px solid #e2e8f0' }}>إجراءات</th>
                                             </tr>
-                                        );
+                                        </thead>
+                                        <tbody>
+                                            {products
+                                                .filter(p => {
+                                                    const searchLower = searchTerm.trim().toLowerCase();
+                                                    if (!searchLower) return true;
+                                                    const matchesSelf = p.name.toLowerCase().includes(searchLower);
+                                                    const parent = p.parentProduct ? products.find(parent => parent.id === p.parentProduct) : null;
+                                                    const matchesParent = parent?.name.toLowerCase().includes(searchLower);
+                                                    const children = products.filter(child => child.parentProduct === p.id);
+                                                    const matchesAnyChild = children.some(c => c.name.toLowerCase().includes(searchLower));
+                                                    return matchesSelf || matchesParent || matchesAnyChild;
+                                                })
+                                                .map((product) => {
+                                                    const parentName = product.parentProduct
+                                                        ? products.find(p => p.id === product.parentProduct)?.name || 'غير موجود'
+                                                        : '-';
 
-                                    })}
-                                </tbody>
-                            </table>
+                                                return (
+                                                    <tr key={product.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                                                        <td style={{ padding: '0.75rem', fontWeight: '500' }}>{product.name}</td>
+                                                        <td style={{ padding: '0.75rem', color: 'hsl(var(--color-primary))', fontSize: '0.9rem' }}>{parentName}</td>
+                                                        <td style={{ padding: '0.75rem' }}>{product.sortOrder || 0}</td>
+                                                        <td style={{ padding: '0.75rem' }}>{product.unitF || product.unit || '-'}</td>
+                                                        <td style={{ padding: '0.75rem', fontSize: '0.8rem', color: '#64748b' }}>
+                                                            {product.createdAt?.seconds ? new Date(product.createdAt.seconds * 1000).toLocaleDateString('en-GB') : '-'}
+                                                        </td>
+                                                        <td style={{ padding: '0.75rem', fontSize: '0.8rem', color: '#64748b' }}>
+                                                            {product.updatedAt?.seconds ? new Date(product.updatedAt.seconds * 1000).toLocaleDateString('en-GB') : '-'}
+                                                        </td>
+                                                        <td style={{ padding: '0.75rem', display: 'flex', gap: '0.5rem' }}>
+                                                            <button
+                                                                onClick={() => handleOpenModal(product)}
+                                                                style={{
+                                                                    background: 'none', border: '1px solid #e2e8f0',
+                                                                    padding: '0.25rem 0.5rem', borderRadius: '4px', cursor: 'pointer',
+                                                                    color: 'hsl(var(--color-primary))'
+                                                                }}
+                                                            >
+                                                                تعديل
+                                                            </button>
+                                                            <button
+                                                                onClick={() => handleDelete(product.id)}
+                                                                style={{
+                                                                    background: 'none', border: '1px solid #fee2e2',
+                                                                    padding: '0.25rem 0.5rem', borderRadius: '4px', cursor: 'pointer',
+                                                                    color: '#ef4444', backgroundColor: '#fef2f2'
+                                                                }}
+                                                            >
+                                                                حذف
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                );
+
+                                            })}
+                                        </tbody>
+                                    </table>
+                                )}
+                            </div>
                         )}
                     </div>
-                )}
-            </div>
-            </>
+                </>
             )}
 
             {/* Add/Edit Modal */}
@@ -2100,6 +2254,48 @@ const AdminDashboard = () => {
                 </div>
             )}
 
+            {/* Cascading Update Modal */}
+            {isCascadingModalOpen && (
+                <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1200 }}>
+                    <div style={{ backgroundColor: 'white', padding: '2rem', borderRadius: '12px', width: '400px', maxWidth: '90%', boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1)' }}>
+                        <h3 style={{ marginTop: 0, color: 'hsl(var(--color-primary))', textAlign: 'center' }}>تعديل متسلسل (Cascading)</h3>
+                        <p style={{ fontSize: '0.9rem', color: '#64748b', marginBottom: '1.5rem', textAlign: 'center' }}>
+                            سيتم تعديل قيمة <strong>{fieldOptions.find(f => f.value === cascadingField)?.label || cascadingField}</strong> للمنتج <strong>{cascadingProduct?.name}</strong> وتطبيق الفرق على كافة الأيام التالية.
+                        </p>
+
+                        <div style={{ marginBottom: '1.5rem' }}>
+                            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>القيمة الجديدة:</label>
+                            <input
+                                type="number"
+                                className="input-field"
+                                value={cascadingNewValue}
+                                onChange={(e) => setCascadingNewValue(e.target.value)}
+                                autoFocus
+                            />
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '1rem' }}>
+                            <button
+                                onClick={handleExecuteCascadingUpdate}
+                                className="btn btn-primary"
+                                style={{ flex: 1 }}
+                                disabled={isCascadingUpdating}
+                            >
+                                {isCascadingUpdating ? 'جاري الحفظ...' : 'تطبيق التعديل'}
+                            </button>
+                            <button
+                                onClick={() => setIsCascadingModalOpen(false)}
+                                className="btn"
+                                style={{ flex: 1, backgroundColor: '#f1f5f9', color: '#64748b' }}
+                                disabled={isCascadingUpdating}
+                            >
+                                إلغاء
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Notification Toast */}
             {
                 notification && (
@@ -2134,7 +2330,23 @@ const AdminDashboard = () => {
                 )
             }
 
-        </DashboardLayout >
+            {/* Product Correction Standalone Modal */}
+            {showCorrectionStandalone && correctionProductObj && (
+                <ProductCorrectionModal
+                    branchId={selectedBranch}
+                    productId={correctionProductId}
+                    typeId={selectedOrderType}
+                    product={correctionProductObj}
+                    allProducts={products}
+                    onClose={() => {
+                        setShowCorrectionStandalone(false);
+                        setCorrectionProductId(null);
+                        setCorrectionProductObj(null);
+                    }}
+                />
+            )}
+
+        </DashboardLayout>
     );
 };
 
