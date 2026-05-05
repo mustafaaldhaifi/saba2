@@ -44,11 +44,17 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
             );
             const mainSnap = await getDocs(qMain);
 
+
+
             const mainDataMap = {};
             mainSnap.docs.forEach(docSnap => {
                 const data = docSnap.data();
+                console.log("data", data);
                 const dDate = data.date.toDate();
-                const dateKey = dDate.toISOString().split('T')[0];
+                console.log("date1", dDate);
+                // const dateKey = dDate.toISOString().split('T')[0];
+                const dateKey = dDate.toLocaleDateString('sv-SE');
+                console.log("date2", dateKey);
                 if (dateKey >= startStr && dateKey <= todayStr) {
                     mainDataMap[dateKey] = {
                         ...data,
@@ -61,6 +67,7 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                     };
                 }
             });
+
 
             // --- 2. Fetch Deductions and Children Parallely ---
             const deductionIds = (product?.deductions || []).map(d => d.productId);
@@ -139,6 +146,9 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
             setChildrenData(finalChildren);
             setIsDataReady(Object.keys(mainDataMap).length > 0);
 
+            console.log("mainDataMap", mainDataMap);
+
+
         } catch (error) {
             console.error("Error fetching correction data:", error);
             alert("حدث خطأ أثناء جلب البيانات.");
@@ -165,10 +175,10 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
 
     const handleExportExcel = () => {
         if (!isDataReady) return;
-        
+
         try {
             const wb = XLSX.utils.book_new();
-            
+
             // 1. Prepare Main Product Data
             const mainRows = Object.keys(correctionData).sort().map(date => {
                 const d = correctionData[date];
@@ -514,7 +524,7 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
             setIsSaving(false);
         }
     };
-      
+
 
     // ── Monthly Preview: per-day comparison (monthly summary ↔ correction) ──
     const PREVIEW_FIELDS = [
@@ -640,7 +650,7 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
 
                         return (
                             <div style={{ border: '2px solid #e2e8f0', borderRadius: '12px' }}>
-                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px',minWidth: '1200px', }}>
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', minWidth: '1200px', }}>
                                     <thead>
                                         <tr>
                                             <th style={thStyle()}>التاريخ</th>
@@ -846,7 +856,7 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                 </div>
 
 
-              
+
 
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '15px', paddingTop: '1.5rem', borderTop: '2px solid #f1f5f9' }}>

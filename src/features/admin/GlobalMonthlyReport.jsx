@@ -290,6 +290,21 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
 
                 <div style={{ display: 'flex', alignItems: 'flex-end' }}>
                     <button
+                        onClick={handleExport}
+                        className="btn"
+                        disabled={Object.keys(aggregatedData).length === 0}
+                        style={{
+                            marginTop: '1rem',
+                            backgroundColor: '#10b981',
+                            color: 'white',
+                            padding: '0.75rem 2rem',
+                            fontSize: '1rem',
+                            fontWeight: '600'
+                        }}
+                    >
+                        📥 تصدير Excel
+                    </button>
+                    <button
                         onClick={handleStartProcessing}
                         className="btn"
                         disabled={isProcessing}
