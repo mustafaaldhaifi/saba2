@@ -127,6 +127,119 @@ const MonthlyBranchReport = ({ branchId, branches, city, typeId, products, onClo
         });
     }
 
+    const getFieldData = (fieldValue, fieldLabel, targetBranchId) => {
+        const tempReportMap = {};
+
+        monthlyData.filter(d => d.branchId === targetBranchId).forEach(prodDoc => {
+            const productId = prodDoc.productId;
+            if (!productId) return;
+
+            if (!tempReportMap[productId]) tempReportMap[productId] = {};
+
+            let dayValuesMap = {};
+            if (prodDoc.days) {
+                Object.keys(prodDoc.days).forEach(dayKey => {
+                    dayValuesMap[dayKey] = prodDoc.days[dayKey];
+                });
+            }
+            Object.keys(prodDoc).forEach(key => {
+                if (key.startsWith('days.')) {
+                    const dayKey = key.split('.')[1];
+                    if (!dayValuesMap[dayKey]) {
+                        dayValuesMap[dayKey] = prodDoc[key];
+                    }
+                }
+            });
+
+            Object.keys(dayValuesMap).forEach(dayKey => {
+                const dayNumber = parseInt(dayKey);
+                if (!isNaN(dayNumber)) {
+                    const val = Number(dayValuesMap[dayKey][fieldValue] || 0);
+                    tempReportMap[productId][dayNumber] = (tempReportMap[productId][dayNumber] || 0) + val;
+                }
+            });
+        });
+
+        const relevantProducts = products.filter(p => {
+            const isSalesItem = p.isSales === true || p.isSales === "true";
+            if (fieldValue === 'sales') return isSalesItem;
+            return !isSalesItem;
+        });
+
+        let tempDisplayProducts = [];
+        const roots = relevantProducts.filter(p => !p.parentProduct);
+        const getChildren = (parentId) => relevantProducts.filter(p => p.parentProduct === parentId);
+
+        if (fieldValue === 'sales') {
+            tempDisplayProducts = products;
+        } else if (['received', 'transfer', 'openingStock'].includes(fieldValue)) {
+            tempDisplayProducts = roots;
+        } else {
+            roots.forEach(root => {
+                const children = getChildren(root.id);
+                if (children.length > 0) {
+                    children.forEach(c => {
+                        tempDisplayProducts.push({ ...c, _parentName: root.name });
+                    });
+                } else {
+                    tempDisplayProducts.push(root);
+                }
+            });
+        }
+
+        const wsData = [];
+        // Add Header for the section
+        const branchNameLabel = branches?.find(b => b.id === targetBranchId)?.name || targetBranchId;
+        wsData.push([`--- ${fieldLabel} (${branchNameLabel}) ---`]);
+        const header = ["المنتج", ...days.map(d => `${d}`), "الإجمالي"];
+        wsData.push(header);
+
+        tempDisplayProducts.forEach(prod => {
+            const name = prod._parentName ? `${prod._parentName} / ${prod.name}` : prod.name;
+            const row = [name];
+            let rowTotal = 0;
+            days.forEach(day => {
+                const val = tempReportMap[prod.id]?.[day];
+                const numericVal = Number(val) || 0;
+                row.push(numericVal);
+                rowTotal += numericVal;
+            });
+            row.push(rowTotal);
+            wsData.push(row);
+        });
+
+        return wsData;
+    };
+
+    const handleExportExcel = () => {
+        if (selectedFields.length === 0 || selectedBranches.length === 0) return;
+
+        const wb = XLSX.utils.book_new();
+
+        selectedBranches.forEach(bId => {
+            const bName = branches?.find(b => b.id === bId)?.name || bId;
+            let combinedData = [];
+
+            selectedFields.forEach((field) => {
+                const fieldLabel = fieldOptions.find(f => f.value === field)?.label || field;
+                const fieldData = getFieldData(field, fieldLabel, bId);
+                // Combine into single sheet for this specific branch
+                combinedData = [...combinedData, ...fieldData, []];
+            });
+
+            const ws = XLSX.utils.aoa_to_sheet(combinedData);
+            let sheetName = bName.substring(0, 31);
+            XLSX.utils.book_append_sheet(wb, ws, sheetName);
+        });
+
+        // Generate file name based on selections
+        let fieldsName = selectedFields.length === 1 ? `_${fieldOptions.find(f => f.value === selectedFields[0])?.label}` : `_بيانات_متعددة`;
+        const reportName = selectedBranches.length > 1 ? "فروع_محددة" : branchName;
+
+        // Write exactly ONE file to prevent browser blocking multiple downloads
+        XLSX.writeFile(wb, `تقرير_${reportName}${fieldsName}_${selectedMonth}.xlsx`);
+    };
+
     return (
         <div className="report-container" style={{ padding: '1rem', direction: 'rtl' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
@@ -199,6 +312,16 @@ const MonthlyBranchReport = ({ branchId, branches, city, typeId, products, onClo
                 >
                     {loading ? 'جاري جلب البيانات...' : 'بحث واستخراج البيانات'}
                 </button>
+                {dataFetched && (
+                    <button
+                        onClick={handleExportExcel}
+                        className="btn"
+                        style={{ backgroundColor: '#10b981', color: 'white', border: 'none', display: 'flex', alignItems: 'center', gap: '5px' }}
+                    >
+                        <span>📊</span> تصدير Excel
+                    </button>
+                )}
+
 
                 {hasUnsavedChanges && (
                     <button

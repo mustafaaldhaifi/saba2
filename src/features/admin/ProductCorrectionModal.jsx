@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { collection, query, where, getDocs, getDoc, doc, runTransaction, Timestamp, serverTimestamp, orderBy } from "firebase/firestore";
 import { db } from '../../config/firebase';
+import * as XLSX from 'xlsx';
 
 const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProducts, onClose }) => {
     const [startDate, setStartDate] = useState(new Date().toISOString().substring(0, 10));
@@ -17,60 +18,23 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
     // Children of this product
     const childProducts = allProducts?.filter(p => p.parentProduct === productId) || [];
 
-    const handleDeductionInputChange = (dedId, dateKey, field, value) => {
-        const newValue = value === '' ? '' : parseFloat(value);
-        setDeductionsData(prev => {
-            const nextDeds = { ...prev };
-            const prodDeds = { ...nextDeds[dedId] };
-            prodDeds[dateKey] = { ...prodDeds[dateKey], [field]: newValue };
-
-            // Recalculate cascade for this specific deduction product
-            const sortedDates = Object.keys(prodDeds).sort();
-            let lastClose = null;
-            sortedDates.forEach(dk => {
-                if (lastClose !== null) {
-                    prodDeds[dk].openingStock = lastClose;
-                }
-                const d = prodDeds[dk];
-                const open = parseFloat(d.openingStock || 0);
-                const received = parseFloat(d.received || 0);
-                const add = parseFloat(d.add || 0);
-                const sales = parseFloat(d.sales || 0);
-                const staffMeal = parseFloat(d.staffMeal || 0);
-                const damaged = parseFloat(d.damaged || 0);
-                const canceled = parseFloat(d.canceled || 0);
-                const transfer = parseFloat(d.transfer || 0);
-                const direct = parseFloat(d.directTransfer || 0);
-                const free = parseFloat(d.freeIncrease || 0);
-
-                d.closeStock = open + received + add + canceled + free - (sales + staffMeal + damaged + transfer + direct);
-                lastClose = d.closeStock;
-            });
-
-            nextDeds[dedId] = prodDeds;
-            return nextDeds;
-        });
-    };
-
     const handleFetchData = async () => {
         if (!productId || !branchId || !startDate) return;
         setLoading(true);
+
         try {
-            const startStr = startDate; // YYYY-MM-DD
+            const startStr = startDate;
             const today = new Date();
-            const todayStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+            const todayStr = today.toISOString().split('T')[0];
 
-            // Widen range by 1 day on each side to account for UTC shifts
+            // Widen range for safety
             const wideStart = new Date(new Date(startStr).getTime() - 24 * 60 * 60 * 1000);
-            const wideEnd = new Date(new Date(todayStr).getTime() + 24 * 60 * 60 * 1000);
-
+            const wideEnd = new Date(today.getTime() + 24 * 60 * 60 * 1000);
             const startTs = Timestamp.fromDate(wideStart);
             const endTs = Timestamp.fromDate(wideEnd);
 
-            console.log(`[Correction] Fetching with Wide Range: ${wideStart.toISOString()} to ${wideEnd.toISOString()}`);
-            console.log(`[Correction] Params: Branch=${branchId}, Product=${productId}`);
-
-            const q = query(
+            // --- 1. Fetch Main Product ---
+            const qMain = query(
                 collection(db, "dailyReports"),
                 where("branchId", "==", branchId),
                 where("productId", "==", productId),
@@ -78,202 +42,220 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                 where("date", "<=", endTs),
                 orderBy("date", "asc")
             );
+            const mainSnap = await getDocs(qMain);
 
-            const snap = await getDocs(q);
-            const rangeData = {};
-
-            snap.docs.forEach(docSnap => {
-                const dayData = docSnap.data();
-                const dDate = dayData.date.toDate();
-                const dateKey = dDate.getFullYear() + '-' + String(dDate.getMonth() + 1).padStart(2, '0') + '-' + String(dDate.getDate()).padStart(2, '0');
-
+            const mainDataMap = {};
+            mainSnap.docs.forEach(docSnap => {
+                const data = docSnap.data();
+                const dDate = data.date.toDate();
+                const dateKey = dDate.toISOString().split('T')[0];
                 if (dateKey >= startStr && dateKey <= todayStr) {
-                    const monthStr = dateKey.substring(0, 7);
-                    rangeData[dateKey] = {
-                        day: dDate.getDate(),
-                        monthStr: monthStr,
-                        fullDate: dateKey,
-                        received: dayData.recieved ?? dayData.received ?? 0,
-                        add: dayData.add ?? 0,
-                        sales: dayData.sales ?? 0,
-                        staffMeal: dayData.staffMeal ?? 0,
-                        damaged: dayData.dameged ?? dayData.damaged ?? 0,
-                        canceled: dayData.canceled ?? 0,
-                        transfer: dayData.transfer ?? 0,
-                        directTransfer: dayData.directTransfer ?? 0,
-                        freeIncrease: dayData.freeIncrease ?? 0,
-                        openingStock: dayData.openingStockQnt ?? dayData.openingStock ?? 0,
-                        closeStock: dayData.closeStock ?? 0,
+                    mainDataMap[dateKey] = {
+                        ...data,
                         _docId: docSnap.id,
-                        _isDailyReport: true
+                        fullDate: dateKey,
+                        received: data.recieved ?? data.received ?? 0,
+                        damaged: data.dameged ?? data.damaged ?? 0,
+                        openingStock: data.openingStockQnt ?? data.openingStock ?? 0,
+                        sales: data.sales ?? 0
                     };
                 }
             });
 
-            // Fetch Deductions Data
-            const newDeductionsData = {};
-            if (product?.deductions && product.deductions.length > 0) {
-                for (const ded of product.deductions) {
-                    const dedQ = query(
-                        collection(db, "dailyReports"),
-                        where("branchId", "==", branchId),
-                        where("productId", "==", ded.productId),
-                        where("date", ">=", startTs),
-                        where("date", "<=", endTs),
-                        orderBy("date", "asc")
-                    );
-                    const dedSnap = await getDocs(dedQ);
-                    const dedRangeData = {};
-                    dedSnap.docs.forEach(docSnap => {
-                        const dayData = docSnap.data();
-                        const dDate = dayData.date.toDate();
-                        const dateKey = dDate.getFullYear() + '-' + String(dDate.getMonth() + 1).padStart(2, '0') + '-' + String(dDate.getDate()).padStart(2, '0');
+            // --- 2. Fetch Deductions and Children Parallely ---
+            const deductionIds = (product?.deductions || []).map(d => d.productId);
+            const childrenIds = (childProducts || []).map(c => c.id);
 
-                        const dedProductInfo = allProducts?.find(p => p.id === ded.productId);
-                        const mainDayData = rangeData[dateKey];
-                        const mainSales = mainDayData?.sales || 0;
-                        // Use 'amount' as it matches the database field for deductions
-                        const autoDirectTransfer = mainSales * (ded.amount || ded.quantity || 1);
-
-                        if (dateKey >= startStr && dateKey <= todayStr) {
-                            dedRangeData[dateKey] = {
-                                _docId: docSnap.id,
-                                openingStock: dayData.openingStockQnt ?? dayData.openingStock ?? 0,
-                                received: dayData.recieved ?? dayData.received ?? 0,
-                                add: dayData.add ?? 0,
-                                sales: dayData.sales ?? 0,
-                                staffMeal: dayData.staffMeal ?? 0,
-                                damaged: dayData.dameged ?? dayData.damaged ?? 0,
-                                canceled: dayData.canceled ?? 0,
-                                transfer: dayData.transfer ?? 0,
-                                directTransfer: autoDirectTransfer, // Force calculation on load
-                                freeIncrease: dayData.freeIncrease ?? 0,
-                                closeStock: dayData.closeStock ?? 0,
-                                _name: dedProductInfo?.name || ded.productName || 'منتج خصم'
-                            };
-                        }
-                    });
-
-                    // After setting all days, recalculate deduction balances
-                    const dedDates = Object.keys(dedRangeData).sort();
-                    let dLastClose = null;
-                    dedDates.forEach(dk => {
-                        if (dLastClose !== null) dedRangeData[dk].openingStock = dLastClose;
-                        const dr = dedRangeData[dk];
-                        dr.closeStock = (parseFloat(dr.openingStock || 0) + parseFloat(dr.received || 0) + parseFloat(dr.add || 0) + parseFloat(dr.canceled || 0) + parseFloat(dr.freeIncrease || 0)) -
-                            (parseFloat(dr.sales || 0) + parseFloat(dr.staffMeal || 0) + parseFloat(dr.damaged || 0) + parseFloat(dr.transfer || 0) + parseFloat(dr.directTransfer || 0));
-                        dLastClose = dr.closeStock;
-                    });
-
-                    newDeductionsData[ded.productId] = dedRangeData;
-                }
-            }
-
-            // Fetch Children Data
-            const newChildrenData = {};
-            if (childProducts.length > 0) {
-                for (const child of childProducts) {
-                    const childQ = query(
-                        collection(db, "dailyReports"),
-                        where("branchId", "==", branchId),
-                        where("productId", "==", child.id),
-                        where("date", ">=", startTs),
-                        where("date", "<=", endTs),
-                        orderBy("date", "asc")
-                    );
-                    const childSnap = await getDocs(childQ);
-                    const childRangeData = {};
-                    childSnap.docs.forEach(docSnap => {
-                        const dayData = docSnap.data();
-                        const dDate = dayData.date.toDate();
-                        const dateKey = dDate.getFullYear() + '-' + String(dDate.getMonth() + 1).padStart(2, '0') + '-' + String(dDate.getDate()).padStart(2, '0');
-                        if (dateKey >= startStr && dateKey <= todayStr) {
-                            childRangeData[dateKey] = {
-                                _docId: docSnap.id,
-                                _name: child.name,
-                                openingStock: dayData.openingStockQnt ?? dayData.openingStock ?? 0,
-                                received: dayData.recieved ?? dayData.received ?? 0,
-                                add: dayData.add ?? 0,
-                                sales: dayData.sales ?? 0,
-                                staffMeal: dayData.staffMeal ?? 0,
-                                damaged: dayData.dameged ?? dayData.damaged ?? 0,
-                                canceled: dayData.canceled ?? 0,
-                                transfer: dayData.transfer ?? 0,
-                                directTransfer: dayData.directTransfer ?? 0,
-                                freeIncrease: dayData.freeIncrease ?? 0,
-                                closeStock: dayData.closeStock ?? 0,
-                            };
-                        }
-                    });
-                    // Cascade recalculate
-                    const cDates = Object.keys(childRangeData).sort();
-                    let cLastClose = null;
-                    cDates.forEach(dk => {
-                        if (cLastClose !== null) childRangeData[dk].openingStock = cLastClose;
-                        const cr = childRangeData[dk];
-                        cr.closeStock = (parseFloat(cr.openingStock || 0) + parseFloat(cr.received || 0) + parseFloat(cr.add || 0) + parseFloat(cr.canceled || 0) + parseFloat(cr.freeIncrease || 0))
-                            - (parseFloat(cr.sales || 0) + parseFloat(cr.staffMeal || 0) + parseFloat(cr.damaged || 0) + parseFloat(cr.transfer || 0) + parseFloat(cr.directTransfer || 0));
-                        cLastClose = cr.closeStock;
-                    });
-                    newChildrenData[child.id] = childRangeData;
-                }
-            }
-
-            setCorrectionData(rangeData);
-            setDeductionsData(newDeductionsData);
-            setChildrenData(newChildrenData);
-            // Snapshot initial values for preview comparison
-            setInitialSnapshot({
-                correction: JSON.parse(JSON.stringify(rangeData)),
-                children: JSON.parse(JSON.stringify(newChildrenData)),
-                deductions: JSON.parse(JSON.stringify(newDeductionsData))
+            const allSubPromises = [...deductionIds, ...childrenIds].map(async (id) => {
+                const q = query(
+                    collection(db, "dailyReports"),
+                    where("branchId", "==", branchId),
+                    where("productId", "==", id),
+                    where("date", ">=", startTs),
+                    where("date", "<=", endTs),
+                    orderBy("date", "asc")
+                );
+                const snap = await getDocs(q);
+                return { id, docs: snap.docs };
             });
-            const hasData = Object.keys(rangeData).length > 0 || Object.values(newChildrenData).some(c => Object.keys(c).length > 0);
-            setIsDataReady(hasData);
-            if (!hasData) {
-                alert("لم يتم العثور على أي تقارير يومية في هذه الفترة لهذا المنتج.");
-                return;
-            }
-            // Fetch monthly base data for preview
-            const allProductsToPreview = [
-                { pid: productId, dataByDate: rangeData },
-                ...Object.entries(newDeductionsData).map(([pid, d]) => ({ pid, dataByDate: d })),
-                ...Object.entries(newChildrenData).filter(([, d]) => Object.keys(d).length > 0).map(([pid, d]) => ({ pid, dataByDate: d }))
-            ];
-            const newMonthlyBase = {};
-            for (const { pid, dataByDate } of allProductsToPreview) {
-                newMonthlyBase[pid] = {};
-                const months = [...new Set(Object.keys(dataByDate).map(d => d.substring(0, 7)))];
-                for (const monthStr of months) {
-                    const snap = await getDoc(doc(db, "product_monthly_summaries", `${branchId}_${monthStr}_${pid}`));
-                    if (!snap.exists()) continue;
-                    const data = snap.data();
-                    const days = {};
-                    // Support both nested ({ days: { '12': {...} } }) and flat ({ 'days.12': {...} }) formats
-                    if (data.days && typeof data.days === 'object') {
-                        Object.entries(data.days).forEach(([k, v]) => { days[parseInt(k)] = v; });
+
+            const subResults = await Promise.all(allSubPromises);
+
+            const finalDeductions = {};
+            const finalChildren = {};
+
+            // Process Deductions
+            (product?.deductions || []).forEach(ded => {
+                const res = subResults.find(r => r.id === ded.productId);
+                if (!res) return;
+
+                const tempDays = {};
+                res.docs.forEach(docSnap => {
+                    const d = docSnap.data();
+                    const dDate = d.date.toDate();
+                    const dateKey = dDate.toISOString().split('T')[0];
+                    if (dateKey >= startStr && dateKey <= todayStr) {
+                        const parentSales = mainDataMap[dateKey]?.sales || 0;
+                        const ratio = ded.amount || ded.quantity || 1;
+
+                        tempDays[dateKey] = {
+                            ...d,
+                            _docId: docSnap.id,
+                            _name: allProducts?.find(p => p.id === ded.productId)?.name || 'خصم',
+                            directTransfer: parentSales * ratio,
+                            received: d.recieved ?? d.received ?? 0,
+                            openingStock: d.openingStockQnt ?? d.openingStock ?? 0,
+                        };
                     }
-                    Object.keys(data).forEach(key => {
-                        if (key.startsWith('days.')) {
-                            const dayNum = parseInt(key.split('.')[1]);
-                            if (!days[dayNum]) days[dayNum] = data[key]; // flat format fallback
-                        }
-                    });
-                    newMonthlyBase[pid][monthStr] = days;
-                }
-            }
-            setMonthlyBaseData(newMonthlyBase);
+                });
+                finalDeductions[ded.productId] = recalculateBalances(tempDays);
+            });
+
+            // Process Children
+            childProducts.forEach(child => {
+                const res = subResults.find(r => r.id === child.id);
+                if (!res) return;
+
+                const tempDays = {};
+                res.docs.forEach(docSnap => {
+                    const d = docSnap.data();
+                    const dDate = d.date.toDate();
+                    const dateKey = dDate.toISOString().split('T')[0];
+                    if (dateKey >= startStr && dateKey <= todayStr) {
+                        tempDays[dateKey] = {
+                            ...d,
+                            _docId: docSnap.id,
+                            _name: child.name,
+                            received: d.recieved ?? d.received ?? 0,
+                            openingStock: d.openingStockQnt ?? d.openingStock ?? 0,
+                        };
+                    }
+                });
+                finalChildren[child.id] = recalculateBalances(tempDays);
+            });
+
+            setCorrectionData(mainDataMap);
+            setDeductionsData(finalDeductions);
+            setChildrenData(finalChildren);
+            setIsDataReady(Object.keys(mainDataMap).length > 0);
+
         } catch (error) {
             console.error("Error fetching correction data:", error);
-            alert("حدث خطأ أثناء جلب البيانات. تأكد من وجود اتصال وتوفر التقارير.");
+            alert("حدث خطأ أثناء جلب البيانات.");
         } finally {
             setLoading(false);
         }
     };
 
+    const recalculateBalances = (daysMap) => {
+        const sortedDates = Object.keys(daysMap).sort();
+        let lastClose = null;
+        const result = { ...daysMap };
+
+        sortedDates.forEach(date => {
+            if (lastClose !== null) result[date].openingStock = lastClose;
+            const day = result[date];
+            const ins = Number(day.openingStock || 0) + Number(day.received || 0) + Number(day.add || 0) + Number(day.canceled || 0) + Number(day.freeIncrease || 0);
+            const outs = Number(day.sales || 0) + Number(day.staffMeal || 0) + Number(day.damaged || 0) + Number(day.transfer || 0) + Number(day.directTransfer || 0);
+            day.closeStock = ins - outs;
+            lastClose = day.closeStock;
+        });
+        return result;
+    };
+
+    const handleExportExcel = () => {
+        if (!isDataReady) return;
+        
+        try {
+            const wb = XLSX.utils.book_new();
+            
+            // 1. Prepare Main Product Data
+            const mainRows = Object.keys(correctionData).sort().map(date => {
+                const d = correctionData[date];
+                return {
+                    'التاريخ': date,
+                    'المنتج': product?.name,
+                    'الموجود': d.openingStock,
+                    'المستلم': d.received,
+                    'الجرد': d.add,
+                    'مبيعات': d.sales,
+                    'وجبة موظف': d.staffMeal,
+                    'تالف': d.damaged,
+                    'مكنسل': d.canceled,
+                    'تحويل': d.transfer,
+                    'ت. مباشر': d.directTransfer,
+                    'ز. مجانية': d.freeIncrease,
+                    'المتبقي': d.closeStock
+                };
+            });
+            const wsMain = XLSX.utils.json_to_sheet(mainRows);
+            XLSX.utils.book_append_sheet(wb, wsMain, "المنتج الرئيسي");
+
+            // 2. Prepare Children Data
+            if (Object.keys(childrenData).length > 0) {
+                const childRows = [];
+                Object.keys(childrenData).forEach(childId => {
+                    const childName = allProducts?.find(p => p.id === childId)?.name || 'ابن';
+                    Object.keys(childrenData[childId]).sort().forEach(date => {
+                        const d = childrenData[childId][date];
+                        childRows.push({
+                            'التاريخ': date,
+                            'المنتج التابع': childName,
+                            'الموجود': d.openingStock,
+                            'المستلم': d.received,
+                            'الجرد': d.add,
+                            'مبيعات': d.sales,
+                            'وجبة موظف': d.staffMeal,
+                            'تالف': d.damaged,
+                            'مكنسل': d.canceled,
+                            'تحويل': d.transfer,
+                            'ت. مباشر': d.directTransfer,
+                            'ز. مجانية': d.freeIncrease,
+                            'المتبقي': d.closeStock
+                        });
+                    });
+                });
+                const wsChildren = XLSX.utils.json_to_sheet(childRows);
+                XLSX.utils.book_append_sheet(wb, wsChildren, "المنتجات التابعة");
+            }
+
+            // 3. Prepare Deductions Data
+            if (Object.keys(deductionsData).length > 0) {
+                const dedRows = [];
+                Object.keys(deductionsData).forEach(dedId => {
+                    const dedName = allProducts?.find(p => p.id === dedId)?.name || 'خصم';
+                    Object.keys(deductionsData[dedId]).sort().forEach(date => {
+                        const d = deductionsData[dedId][date];
+                        dedRows.push({
+                            'التاريخ': date,
+                            'منتج الخصم': dedName,
+                            'الموجود': d.openingStock,
+                            'المستلم': d.received,
+                            'الجرد': d.add,
+                            'مبيعات': d.sales,
+                            'وجبة موظف': d.staffMeal,
+                            'تالف': d.damaged,
+                            'مكنسل': d.canceled,
+                            'تحويل': d.transfer,
+                            'ت. مباشر': d.directTransfer,
+                            'ز. مجانية': d.freeIncrease,
+                            'المتبقي': d.closeStock
+                        });
+                    });
+                });
+                const wsDeds = XLSX.utils.json_to_sheet(dedRows);
+                XLSX.utils.book_append_sheet(wb, wsDeds, "الخصومات");
+            }
+
+            XLSX.writeFile(wb, `تصحيح_${product?.name}_${startDate}.xlsx`);
+        } catch (error) {
+            console.error("Export error:", error);
+            alert("حدث خطأ أثناء التصدير.");
+        }
+    };
+
     const handleInputChange = (dateKey, field, value) => {
         const newValue = value === '' ? '' : parseFloat(value);
-
         setCorrectionData(prev => {
             const newData = { ...prev };
             newData[dateKey] = { ...newData[dateKey], [field]: newValue };
@@ -285,7 +267,7 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
 
             let lastClose = null;
             sortedDates.forEach(dKey => {
-                const d = { ...newData[dKey] }; // ← new copy per row
+                const d = { ...newData[dKey] };
                 if (lastClose !== null) d.openingStock = lastClose;
 
                 const open = parseFloat(d.openingStock || 0);
@@ -312,7 +294,7 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                         - (parseFloat(d.sales || 0) + parseFloat(d.staffMeal || 0) + parseFloat(d.damaged || 0) + transfer + directTransfer);
                 }
                 lastClose = d.closeStock;
-                newData[dKey] = d; // ← store the new copy
+                newData[dKey] = d;
             });
 
             // Update Deductions if field is 'sales'
@@ -324,16 +306,15 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                             const dedProd = { ...nextDeds[ded.productId] };
                             dedProd[dateKey] = { ...dedProd[dateKey], directTransfer: (newValue || 0) * (ded.amount || ded.quantity || 1) };
 
-                            // Cascade for deduction product
                             const dDates = Object.keys(dedProd).sort();
                             let dLastClose = null;
                             dDates.forEach(dk => {
-                                const dr = { ...dedProd[dk] }; // ← new copy per row
+                                const dr = { ...dedProd[dk] };
                                 if (dLastClose !== null) dr.openingStock = dLastClose;
                                 dr.closeStock = (parseFloat(dr.openingStock || 0) + parseFloat(dr.received || 0) + parseFloat(dr.add || 0) + parseFloat(dr.canceled || 0) + parseFloat(dr.freeIncrease || 0))
                                     - (parseFloat(dr.sales || 0) + parseFloat(dr.staffMeal || 0) + parseFloat(dr.damaged || 0) + parseFloat(dr.transfer || 0) + parseFloat(dr.directTransfer || 0));
                                 dLastClose = dr.closeStock;
-                                dedProd[dk] = dr; // ← store the new copy
+                                dedProd[dk] = dr;
                             });
                             nextDeds[ded.productId] = dedProd;
                         }
@@ -341,7 +322,6 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                     return nextDeds;
                 });
             }
-
             return newData;
         });
     };
@@ -355,26 +335,24 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
             const childDates = { ...next[childId] };
             childDates[dateKey] = { ...childDates[dateKey], [field]: newValue };
 
-            // Cascade child
             const sorted = Object.keys(childDates).sort();
             let lastClose = null;
             sorted.forEach(dk => {
-                const d = { ...childDates[dk] }; // ← new copy per row
+                const d = { ...childDates[dk] };
                 if (lastClose !== null) d.openingStock = lastClose;
                 d.closeStock = (parseFloat(d.openingStock || 0) + parseFloat(d.received || 0) + parseFloat(d.add || 0) + parseFloat(d.canceled || 0) + parseFloat(d.freeIncrease || 0))
                     - (parseFloat(d.sales || 0) + parseFloat(d.staffMeal || 0) + parseFloat(d.damaged || 0) + parseFloat(d.transfer || 0) + parseFloat(d.directTransfer || 0));
                 lastClose = d.closeStock;
-                childDates[dk] = d; // ← store the new copy
+                childDates[dk] = d;
             });
             next[childId] = childDates;
 
-            // Recalculate parent closeStock using updated children
             setCorrectionData(prevParent => {
                 const newParent = { ...prevParent };
                 const sortedDates = Object.keys(newParent).sort();
                 let parentLastClose = null;
                 sortedDates.forEach(dKey => {
-                    const d = { ...newParent[dKey] }; // ← new copy per row
+                    const d = { ...newParent[dKey] };
                     if (parentLastClose !== null) d.openingStock = parentLastClose;
                     const open = parseFloat(d.openingStock || 0);
                     const received = parseFloat(d.received || 0) * productUnit;
@@ -395,26 +373,21 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                     });
                     d.closeStock = open + received + totalAdd + totalCanceled + totalFree - (totalSales + totalStaffMeal + totalDamaged + transfer + directTransfer);
                     parentLastClose = d.closeStock;
-                    newParent[dKey] = d; // ← store the new copy
+                    newParent[dKey] = d;
                 });
                 return newParent;
             });
-
             return next;
         });
     };
 
-
-
-
     const handleSave = async () => {
         setIsSaving(true);
         try {
-            // ── Phase 1: Build monthly refs directly from doc ID pattern: branchId_month_productId ──
             const collectMonthlyRefs = (targetProductId, dataByDate) => {
                 const byMonth = {};
                 Object.entries(dataByDate).forEach(([dateKey, item]) => {
-                    const monthStr = dateKey.substring(0, 7); // YYYY-MM
+                    const monthStr = dateKey.substring(0, 7);
                     if (!byMonth[monthStr]) byMonth[monthStr] = {};
                     byMonth[monthStr][dateKey] = item;
                 });
@@ -432,8 +405,7 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                     .flatMap(([childId, data]) => collectMonthlyRefs(childId, data))
             ];
 
-            // ── Phase 1c: Collect dailyReports refs ──
-            const dailyRefs = []; // [{ ref, data }]
+            const dailyRefs = [];
             const addDailyRefs = (dataMap) => {
                 Object.values(dataMap).forEach(item => {
                     if (item._docId) dailyRefs.push({ ref: doc(db, "dailyReports", item._docId), item });
@@ -443,12 +415,9 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
             Object.values(deductionsData).forEach(addDailyRefs);
             Object.values(childrenData).forEach(addDailyRefs);
 
-            // ── Phase 1b: Pre-query openingStock ref for main product only ──
             const sortedMainDates = Object.keys(correctionData).sort();
-            const mainLastCloseStock = sortedMainDates.length
-                ? Number(correctionData[sortedMainDates[sortedMainDates.length - 1]]?.closeStock) || 0
-                : 0;
-            const openingStockEntries = []; // max 1 entry
+            const mainLastCloseStock = sortedMainDates.length ? Number(correctionData[sortedMainDates[sortedMainDates.length - 1]]?.closeStock) || 0 : 0;
+            const openingStockEntries = [];
             if (sortedMainDates.length) {
                 const osSnap = await getDocs(query(
                     collection(db, "openingStock"),
@@ -457,25 +426,14 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                     where("typeId", "==", typeId || product?.typeId || "5"),
                     orderBy("createdAt", "asc")
                 ));
-                if (!osSnap.empty)
-                    openingStockEntries.push({ ref: osSnap.docs[0].ref, newQty: mainLastCloseStock });
+                if (!osSnap.empty) openingStockEntries.push({ ref: osSnap.docs[0].ref, newQty: mainLastCloseStock });
             }
 
-            // ── Phase 2: runTransaction — reads first, then writes ──
             await runTransaction(db, async (transaction) => {
+                const monthlySnaps = await Promise.all(allMonthlyRefs.map(({ ref }) => transaction.get(ref)));
+                const openingStockSnaps = await Promise.all(openingStockEntries.map(({ ref }) => transaction.get(ref)));
+                const dailySnaps = await Promise.all(dailyRefs.map(({ ref }) => transaction.get(ref)));
 
-                // READ all monthly docs + openingStock docs + dailyReport docs to lock them
-                const monthlySnaps = await Promise.all(
-                    allMonthlyRefs.map(({ ref }) => transaction.get(ref))
-                );
-                const openingStockSnaps = await Promise.all(
-                    openingStockEntries.map(({ ref }) => transaction.get(ref))
-                );
-                const dailySnaps = await Promise.all(
-                    dailyRefs.map(({ ref }) => transaction.get(ref))
-                );
-
-                // Helper: daily report fields
                 const n = (v) => Number(v) || 0;
                 const drFields = (item) => ({
                     openingStockQnt: n(item.openingStock),
@@ -492,7 +450,6 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                     updatedAt: serverTimestamp()
                 });
 
-                // Helper: build a single day's data object
                 const buildDayData = (item) => ({
                     openingStock: n(item.openingStock),
                     received: n(item.received),
@@ -507,64 +464,38 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                     closeStock: n(item.closeStock)
                 });
 
-                // WRITE 1, 2, 3 — dailyReports (Only update if doc exists in DB)
                 dailyRefs.forEach(({ ref, item }, idx) => {
-                    if (dailySnaps[idx].exists()) {
-                        transaction.update(ref, drFields(item));
-                    } else {
-                        console.warn(`Daily report doc ${ref.id} not found in Firestore.`);
-                    }
+                    if (dailySnaps[idx].exists()) transaction.update(ref, drFields(item));
                 });
 
-                // WRITE 4 — product_monthly_summaries
-                // Use transaction.set (not update) to preserve flat "days.N" field format.
-                // Merge corrected days into the full existing document data.
                 allMonthlyRefs.forEach(({ ref, monthItems }, i) => {
-
-
                     if (!monthlySnaps[i].exists()) return;
                     const existingDoc = monthlySnaps[i].data();
-                    // Copy all existing fields (preserves branchId, productId, month, other days)
                     const newDocData = { ...existingDoc };
-                    // Overwrite only the corrected days using flat key format
                     Object.entries(monthItems).forEach(([dateKey, item]) => {
                         const dayNum = parseInt(dateKey.split('-')[2]);
-                        const dayKey = `days.${String(dayNum).padStart(2, '0')}`; // e.g. days.01
-                        // Delete ALL existing variants of this day (padded and unpadded)
+                        const dayKey = `days.${String(dayNum).padStart(2, '0')}`;
                         Object.keys(newDocData).forEach(key => {
-                            if (key.startsWith('days.') && parseInt(key.split('.')[1]) === dayNum) {
-                                delete newDocData[key];
-                            }
+                            if (key.startsWith('days.') && parseInt(key.split('.')[1]) === dayNum) delete newDocData[key];
                         });
-                        // Remove nested days entry if exists
                         if (newDocData.days && newDocData.days[dayNum] !== undefined) {
                             const cleanDays = { ...newDocData.days };
                             delete cleanDays[dayNum];
                             if (Object.keys(cleanDays).length) newDocData.days = cleanDays;
                             else delete newDocData.days;
                         }
-                        // Write with zero-padded format
                         newDocData[dayKey] = buildDayData(item);
                     });
-
                     transaction.set(ref, newDocData);
                 });
 
-                // WRITE 5 — openingStock (last day closeStock → new opening balance)
                 openingStockEntries.forEach(({ ref, newQty }, i) => {
-                    if (openingStockSnaps[i].exists())
-                        transaction.update(ref, {
-                            openingStockQnt: Number(newQty) || 0,
-                            updatedAt: serverTimestamp()
-                        });
+                    if (openingStockSnaps[i].exists()) transaction.update(ref, { openingStockQnt: n(newQty), updatedAt: serverTimestamp() });
                 });
 
-                // WRITE 6 — Triggers for each corrected date
-                const uniqueDates = Object.keys(correctionData);
-                uniqueDates.forEach(dateStr => {
+                Object.keys(correctionData).forEach(dateStr => {
                     const dDate = new Date(dateStr);
-                    dDate.setHours(12, 0, 0, 0); // Normalize to midday to match system timestamps
-                    
+                    dDate.setHours(12, 0, 0, 0);
                     transaction.set(doc(collection(db, "dailyReportsUpdates")), {
                         branchId,
                         date: Timestamp.fromDate(dDate),
@@ -573,7 +504,6 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                     });
                 });
             });
-
 
             alert("تم حفظ التعديلات وتحديث أرصدة كافة المنتجات المتأثرة بنجاح!");
             onClose();
@@ -584,6 +514,7 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
             setIsSaving(false);
         }
     };
+      
 
     // ── Monthly Preview: per-day comparison (monthly summary ↔ correction) ──
     const PREVIEW_FIELDS = [
@@ -708,8 +639,8 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                         const tdStyle = (extra = {}) => ({ padding: '6px', border: '1px solid #f1f5f9', textAlign: 'center', fontSize: '12px', verticalAlign: 'middle', ...extra });
 
                         return (
-                            <div style={{ overflowX: 'auto', border: '2px solid #e2e8f0', borderRadius: '12px' }}>
-                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                            <div style={{ border: '2px solid #e2e8f0', borderRadius: '12px' }}>
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px',minWidth: '1200px', }}>
                                     <thead>
                                         <tr>
                                             <th style={thStyle()}>التاريخ</th>
@@ -915,74 +846,7 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                 </div>
 
 
-                {/* ── Monthly Summary Preview (per-day) ── */}
-                {monthlyPreviewRows.length > 0 && (
-                    <div style={{ marginTop: '1.5rem', border: '1.5px solid #6366f1', borderRadius: '12px', overflow: 'hidden', flexShrink: 0 }}>
-                        <div
-                            onClick={() => setShowMonthlyPreview(v => !v)}
-                            style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', backgroundColor: '#eef2ff', cursor: 'pointer', userSelect: 'none' }}
-                        >
-                            <span style={{ fontWeight: '700', color: '#4338ca', fontSize: '13px' }}>
-                                📊 معاينة التأثير على التقارير الشهرية — مقارنة يوم بيوم ({monthlyPreviewRows.length} منتج متأثر)
-                            </span>
-                            <span style={{ color: '#6366f1', fontSize: '16px' }}>{showMonthlyPreview ? '▲' : '▼'}</span>
-                        </div>
-                        {showMonthlyPreview && (
-                            <div style={{ maxHeight: '280px', overflowY: 'auto', padding: '10px', backgroundColor: '#fafafe', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                                {monthlyPreviewRows.map(({ pid, name, monthStr, dayRows }) => (
-                                    <div key={`${pid}_${monthStr}`} style={{ border: '1px solid #e0e7ff', borderRadius: '8px', overflow: 'hidden' }}>
-                                        {/* Product + Month Header */}
-                                        <div style={{ padding: '6px 12px', backgroundColor: '#e0e7ff', display: 'flex', gap: '10px', alignItems: 'center' }}>
-                                            <span style={{ fontWeight: '700', color: '#3730a3', fontSize: '13px' }}>{name}</span>
-                                            <span style={{ fontSize: '11px', color: '#6366f1', backgroundColor: '#c7d2fe', padding: '1px 7px', borderRadius: '99px' }}>{monthStr}</span>
-                                        </div>
-                                        {/* Per-Day Table */}
-                                        <div style={{ overflowX: 'auto' }}>
-                                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', textAlign: 'center' }}>
-                                                <thead>
-                                                    <tr style={{ backgroundColor: '#f5f3ff' }}>
-                                                        <th style={{ padding: '6px 10px', textAlign: 'right', color: '#4338ca', borderBottom: '1px solid #e0e7ff', whiteSpace: 'nowrap', position: 'sticky', right: 0, backgroundColor: '#f5f3ff', zIndex: 1 }}>التاريخ</th>
-                                                        {PREVIEW_FIELDS.map(({ key, label }) => (
-                                                            <th key={key} style={{ padding: '6px 8px', color: '#475569', borderBottom: '1px solid #e0e7ff', borderRight: '1px solid #f1f5f9', whiteSpace: 'nowrap', minWidth: '65px' }}>
-                                                                {label}
-                                                            </th>
-                                                        ))}
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {dayRows.map(({ dateKey, fieldDiffs }) => (
-                                                        <tr key={dateKey} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                                                            <td style={{ padding: '5px 10px', textAlign: 'right', fontWeight: '600', color: '#334155', whiteSpace: 'nowrap', position: 'sticky', right: 0, backgroundColor: '#fafafe', borderRight: '1px solid #e0e7ff', zIndex: 1 }}>
-                                                                {dateKey.split('-').slice(1).reverse().join('/')}
-                                                            </td>
-                                                            {fieldDiffs.map(({ key, newV, delta, changed }) => (
-                                                                <td key={key} style={{ padding: '5px 6px', borderRight: '1px solid #f1f5f9', backgroundColor: changed ? (delta > 0 ? '#f0fdf4' : '#fff1f2') : 'transparent', textAlign: 'center' }}>
-                                                                    <span style={{
-                                                                        fontWeight: changed ? '700' : '400',
-                                                                        color: changed ? (delta > 0 ? '#15803d' : '#dc2626') : '#94a3b8',
-                                                                        fontSize: '12px'
-                                                                    }}>
-                                                                        {newV}
-                                                                    </span>
-                                                                    {changed && (
-                                                                        <span style={{ display: 'block', fontSize: '9px', color: delta > 0 ? '#15803d' : '#dc2626' }}>
-                                                                            {delta > 0 ? '+' : ''}{delta}
-                                                                        </span>
-                                                                    )}
-                                                                </td>
-                                                            ))}
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
-
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                )}
+              
 
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '15px', paddingTop: '1.5rem', borderTop: '2px solid #f1f5f9' }}>

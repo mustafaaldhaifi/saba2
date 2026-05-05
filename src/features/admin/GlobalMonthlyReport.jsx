@@ -69,7 +69,7 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                 );
 
                 const snap = await getDocs(q);
-                
+
                 snap.docs.forEach(doc => {
                     const data = doc.data();
                     const productId = data.productId;
@@ -81,11 +81,11 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                     const prodName = prodInfo?.name || "منتج غير معروف";
 
                     if (!results[linkId]) {
-                        results[linkId] = { 
-                            name: prodName, 
+                        results[linkId] = {
+                            name: prodName,
                             parentProduct: prodInfo?.parentProduct,
                             isSales: prodInfo?.isSales,
-                            branches: {} 
+                            branches: {}
                         };
                     }
                     if (!results[linkId].branches[branch.id]) {
@@ -139,20 +139,20 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
 
         selectedFields.forEach(field => {
             const fieldLabel = fieldOptions.find(f => f.value === field)?.label || field;
-            
+
             // 1. Header Row
             const header = ["المنتج", ...targetBranches.map(b => b.name), "الإجمالي العام"];
             combinedData.push([`--- تقرير الفروع - ${selectedMonth} - ${fieldLabel} ---`]);
             combinedData.push(header);
 
             // 2. Data Rows
-            const sortedLinkIds = Object.keys(aggregatedData).sort((a, b) => 
+            const sortedLinkIds = Object.keys(aggregatedData).sort((a, b) =>
                 aggregatedData[a].name.localeCompare(aggregatedData[b].name)
             );
 
             sortedLinkIds.forEach(linkId => {
                 const prod = aggregatedData[linkId];
-                
+
                 const isSalesItem = prod.isSales === true || prod.isSales === "true";
                 if (field !== 'sales' && isSalesItem) return;
 
@@ -168,7 +168,7 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                 row.push(rowTotal);
                 combinedData.push(row);
             });
-            
+
             combinedData.push([]); // Empty row for spacing
         });
 
@@ -180,10 +180,10 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
     };
 
     return (
-        <div className="card" style={{ 
-            marginTop: '1rem', 
-            padding: '2rem', 
-            border: '1px solid #e2e8f0', 
+        <div className="card" style={{
+            marginTop: '1rem',
+            padding: '2rem',
+            border: '1px solid #e2e8f0',
             backgroundColor: '#ffffff',
             borderRadius: '12px',
             boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
@@ -211,7 +211,7 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
 
                 <div className="input-group" style={{ marginBottom: 0 }}>
                     <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#475569' }}>تحديد الفروع</label>
-                    <select 
+                    <select
                         value={cityFilter}
                         onChange={(e) => setCityFilter(e.target.value)}
                         style={{ marginBottom: '8px', width: '100%', padding: '4px', borderRadius: '4px', border: '1px solid #cbd5e1' }}
@@ -222,8 +222,8 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                     </select>
                     <div style={{ maxHeight: '120px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '0.5rem', backgroundColor: '#fff' }}>
                         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', borderBottom: '1px solid #f1f5f9', fontWeight: 'bold' }}>
-                            <input 
-                                type="checkbox" 
+                            <input
+                                type="checkbox"
                                 checked={branches.length > 0 && branches.every(b => selectedBranches.includes(b.id))}
                                 onChange={(e) => {
                                     if (e.target.checked) {
@@ -233,7 +233,7 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                                     }
                                 }}
                                 disabled={isProcessing}
-                            /> 
+                            />
                             تحديد الكل (كافة المدن)
                         </label>
                         {branches
@@ -243,19 +243,19 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                                 return b.city === cityFilter;
                             })
                             .map(b => (
-                            <label key={b.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '0.85rem' }}>
-                                <input 
-                                    type="checkbox" 
-                                    checked={selectedBranches.includes(b.id)}
-                                    onChange={(e) => {
-                                        if (e.target.checked) setSelectedBranches([...selectedBranches, b.id]);
-                                        else setSelectedBranches(selectedBranches.filter(id => id !== b.id));
-                                    }}
-                                    disabled={isProcessing}
-                                /> 
-                                {b.name} <small style={{ color: '#94a3b8' }}>({b.city === 'other' ? 'خارج الرياض' : 'الرياض'})</small>
-                            </label>
-                        ))}
+                                <label key={b.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '0.85rem' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={selectedBranches.includes(b.id)}
+                                        onChange={(e) => {
+                                            if (e.target.checked) setSelectedBranches([...selectedBranches, b.id]);
+                                            else setSelectedBranches(selectedBranches.filter(id => id !== b.id));
+                                        }}
+                                        disabled={isProcessing}
+                                    />
+                                    {b.name} <small style={{ color: '#94a3b8' }}>({b.city === 'other' ? 'خارج الرياض' : 'الرياض'})</small>
+                                </label>
+                            ))}
                     </div>
                 </div>
 
@@ -263,25 +263,25 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                     <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#475569' }}>نوع البيانات</label>
                     <div style={{ maxHeight: '120px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '0.5rem', backgroundColor: '#fff' }}>
                         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', borderBottom: '1px solid #f1f5f9', fontWeight: 'bold' }}>
-                            <input 
-                                type="checkbox" 
+                            <input
+                                type="checkbox"
                                 checked={selectedFields.length === fieldOptions.length}
                                 onChange={(e) => setSelectedFields(e.target.checked ? fieldOptions.map(f => f.value) : [])}
                                 disabled={isProcessing}
-                            /> 
+                            />
                             تحديد الكل
                         </label>
                         {fieldOptions.map(f => (
                             <label key={f.value} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '0.85rem' }}>
-                                <input 
-                                    type="checkbox" 
+                                <input
+                                    type="checkbox"
                                     checked={selectedFields.includes(f.value)}
                                     onChange={(e) => {
                                         if (e.target.checked) setSelectedFields([...selectedFields, f.value]);
                                         else setSelectedFields(selectedFields.filter(v => v !== f.value));
                                     }}
                                     disabled={isProcessing}
-                                /> 
+                                />
                                 {f.label}
                             </label>
                         ))}
@@ -293,10 +293,10 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                         onClick={handleStartProcessing}
                         className="btn"
                         disabled={isProcessing}
-                        style={{ 
-                            width: '100%', 
-                            backgroundColor: 'hsl(var(--color-primary))', 
-                            color: 'white', 
+                        style={{
+                            width: '100%',
+                            backgroundColor: 'hsl(var(--color-primary))',
+                            color: 'white',
                             padding: '0.75rem',
                             fontWeight: '600',
                             opacity: isProcessing ? 0.7 : 1
@@ -316,9 +316,9 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                         <span style={{ color: '#64748b' }}>{progress.current} / {progress.total}</span>
                     </div>
                     <div style={{ width: '100%', height: '12px', backgroundColor: '#e2e8f0', borderRadius: '6px', overflow: 'hidden' }}>
-                        <div style={{ 
-                            width: `${(progress.current / progress.total) * 100}%`, 
-                            height: '100%', 
+                        <div style={{
+                            width: `${(progress.current / progress.total) * 100}%`,
+                            height: '100%',
                             backgroundColor: 'hsl(var(--color-primary))',
                             transition: 'width 0.3s ease'
                         }}></div>
