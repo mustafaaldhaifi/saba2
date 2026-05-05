@@ -25,7 +25,9 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
         try {
             const startStr = startDate;
             const today = new Date();
-            const todayStr = today.toISOString().split('T')[0];
+            // const todayStr = today.toISOString().split('T')[0];
+            const todayStr = today.toLocaleDateString('sv-SE');
+
 
             // Widen range for safety
             const wideStart = new Date(new Date(startStr).getTime() - 24 * 60 * 60 * 1000);
@@ -100,7 +102,8 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                 res.docs.forEach(docSnap => {
                     const d = docSnap.data();
                     const dDate = d.date.toDate();
-                    const dateKey = dDate.toISOString().split('T')[0];
+                    // const dateKey = dDate.toISOString().split('T')[0];
+                    const dateKey = dDate.toLocaleDateString('sv-SE');
                     if (dateKey >= startStr && dateKey <= todayStr) {
                         const parentSales = mainDataMap[dateKey]?.sales || 0;
                         const ratio = ded.amount || ded.quantity || 1;
@@ -127,7 +130,8 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                 res.docs.forEach(docSnap => {
                     const d = docSnap.data();
                     const dDate = d.date.toDate();
-                    const dateKey = dDate.toISOString().split('T')[0];
+                    // const dateKey = dDate.toISOString().split('T')[0];
+                    const dateKey = dDate.toLocaleDateString('sv-SE');
                     if (dateKey >= startStr && dateKey <= todayStr) {
                         tempDays[dateKey] = {
                             ...d,
