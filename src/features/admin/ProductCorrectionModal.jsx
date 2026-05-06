@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, query, where, getDocs, getDoc, doc, runTransaction, Timestamp, serverTimestamp, orderBy } from "firebase/firestore";
+import { collection, query, where, getDocs, getDoc, doc, runTransaction, Timestamp, serverTimestamp, orderBy, arrayUnion } from "firebase/firestore";
 import { db } from '../../config/firebase';
 import * as XLSX from 'xlsx';
 
@@ -507,16 +507,56 @@ const ProductCorrectionModal = ({ branchId, productId, typeId, product, allProdu
                     if (openingStockSnaps[i].exists()) transaction.update(ref, { openingStockQnt: n(newQty), updatedAt: serverTimestamp() });
                 });
 
-                Object.keys(correctionData).forEach(dateStr => {
+                // Object.keys(correctionData).forEach(dateStr => {
+                //     const dDate = new Date(dateStr);
+                //     dDate.setHours(12, 0, 0, 0);
+                //     transaction.set(doc(collection(db, "dailyReportsUpdates")), {
+                //         branchId,
+                //         date: Timestamp.fromDate(dDate),
+                //         productIds: [productId, ...Object.keys(deductionsData), ...Object.keys(childrenData)],
+                //         updatedAt: serverTimestamp()
+                //     });
+                // });
+
+                for (const dateStr of Object.keys(correctionData)) {
                     const dDate = new Date(dateStr);
-                    dDate.setHours(12, 0, 0, 0);
-                    transaction.set(doc(collection(db, "dailyReportsUpdates")), {
-                        branchId,
-                        date: Timestamp.fromDate(dDate),
-                        productIds: [productId, ...Object.keys(deductionsData), ...Object.keys(childrenData)],
-                        updatedAt: serverTimestamp()
-                    });
-                });
+                    dDate.setHours(0, 0, 0, 0); // لضمان تطابق الوقت كما تفعل في الكود الأصلي
+                    const targetTimestamp = Timestamp.fromDate(dDate);
+
+                    // 1. البحث عن المستند الذي يطابق الفرع والتاريخ
+                    const q = query(
+                        collection(db, "dailyReportsUpdates"),
+                        where("branchId", "==", branchId),
+                        where("date", "==", targetTimestamp)
+                    );
+
+                     console.log('targetTimestamp',dDate);
+
+
+                    const querySnapshot = await getDocs(q);
+
+                    if (!querySnapshot.empty) {
+                        // 2. إذا وجد المستند (تحديث)
+                        const existingDoc = querySnapshot.docs[0]; // نأخذ أول مستند مطابق
+
+                     console.log('existingDocs',querySnapshot.docs);
+
+                     console.log('existingDoc',existingDoc);
+
+                        transaction.update(existingDoc.ref, {
+                            updatedAt: serverTimestamp()
+                        });
+                    } else {
+                        // 3. إذا لم يجد المستند (إنشاء مستند جديد بمعرف عشوائي)
+                        const newDocRef = doc(collection(db, "dailyReportsUpdates"));
+
+                        transaction.set(newDocRef, {
+                            branchId,
+                            date: targetTimestamp,
+                            updatedAt: serverTimestamp()
+                        });
+                    }
+                }
             });
 
             alert("تم حفظ التعديلات وتحديث أرصدة كافة المنتجات المتأثرة بنجاح!");
