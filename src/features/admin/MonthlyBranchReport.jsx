@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { collection, query, where, getDocs, doc, getDoc, updateDoc, writeBatch, Timestamp, serverTimestamp, setDoc, orderBy } from "firebase/firestore";
 import { db } from '../../config/firebase';
 import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
+import { saveAs } from 'file-saver';
 
 const MonthlyBranchReport = ({ branchId, branches, city, typeId, products, onClose, branchName, onOpenCorrection }) => {
     const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().substring(0, 7)); // YYYY-MM
@@ -211,34 +213,97 @@ const MonthlyBranchReport = ({ branchId, branches, city, typeId, products, onClo
         return wsData;
     };
 
-    const handleExportExcel = () => {
-        if (selectedFields.length === 0 || selectedBranches.length === 0) return;
+const handleExportExcel = async () => {
+    if (selectedFields.length === 0 || selectedBranches.length === 0) return;
 
-        const wb = XLSX.utils.book_new();
+    const workbook = new ExcelJS.Workbook();
 
-        selectedBranches.forEach(bId => {
-            const bName = branches?.find(b => b.id === bId)?.name || bId;
-            let combinedData = [];
+    selectedBranches.forEach(bId => {
+        const bName = branches?.find(b => b.id === bId)?.name || bId;
+        let combinedData = [];
 
-            selectedFields.forEach((field) => {
-                const fieldLabel = fieldOptions.find(f => f.value === field)?.label || field;
-                const fieldData = getFieldData(field, fieldLabel, bId);
-                // Combine into single sheet for this specific branch
-                combinedData = [...combinedData, ...fieldData, []];
-            });
-
-            const ws = XLSX.utils.aoa_to_sheet(combinedData);
-            let sheetName = bName.substring(0, 31);
-            XLSX.utils.book_append_sheet(wb, ws, sheetName);
+        selectedFields.forEach((field) => {
+            const fieldLabel = fieldOptions.find(f => f.value === field)?.label || field;
+            const fieldData = getFieldData(field, fieldLabel, bId);
+            combinedData = [...combinedData, ...fieldData, []];
         });
 
-        // Generate file name based on selections
-        let fieldsName = selectedFields.length === 1 ? `_${fieldOptions.find(f => f.value === selectedFields[0])?.label}` : `_بيانات_متعددة`;
-        const reportName = selectedBranches.length > 1 ? "فروع_محددة" : branchName;
+        let sheetName = bName.substring(0, 31);
+        const worksheet = workbook.addWorksheet(sheetName);
 
-        // Write exactly ONE file to prevent browser blocking multiple downloads
-        XLSX.writeFile(wb, `تقرير_${reportName}${fieldsName}_${selectedMonth}.xlsx`);
-    };
+        worksheet.addRows(combinedData);
+
+        // --- المرور على الصفوف صفاً تلو الآخر لتطبيق التنسيق على مستوى الصف ---
+        worksheet.eachRow((row, rowNumber) => {
+            
+            // 1. تنسيق الأرقام وتلوين السالب بالأحمر لكل خلايا هذا الصف
+            row.eachCell((cell) => {
+                if (typeof cell.value === 'number') {
+                  cell.numFmt = '#,##0;[Red]-#,##0;0';
+                }
+            });
+
+            // 2. إضافة Data Bar مخصص لهذا الصف فقط (المقارنة أفقية داخل الصف)
+            // النطاق سيكون من العمود A إلى العمود V لنفس رقم الصف الحالي
+            worksheet.addConditionalFormatting({
+                ref: `A${rowNumber}:V${rowNumber}`, 
+                rules: [
+                    {
+                        type: 'dataBar',
+                        minLength: 0,
+                        maxLength: 100,
+                        showValue: true,
+                        cfvo: [
+                            { type: 'min' }, // أصغر قيمة في هذا الصف ستأخذ أصغر بار
+                            { type: 'max' }  // أعلى قيمة في هذا الصف ستأخذ البار الكامل
+                        ],
+                        color: { argb: 'FF3399FF' } // اللون الأزرق
+                    }
+                ]
+            });
+        });
+    });
+
+    let fieldsName = selectedFields.length === 1 ? `_${fieldOptions.find(f => f.value === selectedFields[0])?.label}` : `_بيانات_متعددة`;
+    const reportName = selectedBranches.length > 1 ? "فروع_محددة" : branchName;
+    const fileName = `تقرير_${reportName}${fieldsName}_${selectedMonth}.xlsx`;
+
+    try {
+        const buffer = await workbook.xlsx.writeBuffer();
+        const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        saveAs(blob, fileName);
+    } catch (error) {
+        console.error("خطأ أثناء تصدير ملف إكسيل:", error);
+    }
+};
+    // const handleExportExcel = () => {
+    //     if (selectedFields.length === 0 || selectedBranches.length === 0) return;
+
+    //     const wb = XLSX.utils.book_new();
+
+    //     selectedBranches.forEach(bId => {
+    //         const bName = branches?.find(b => b.id === bId)?.name || bId;
+    //         let combinedData = [];
+
+    //         selectedFields.forEach((field) => {
+    //             const fieldLabel = fieldOptions.find(f => f.value === field)?.label || field;
+    //             const fieldData = getFieldData(field, fieldLabel, bId);
+    //             // Combine into single sheet for this specific branch
+    //             combinedData = [...combinedData, ...fieldData, []];
+    //         });
+
+    //         const ws = XLSX.utils.aoa_to_sheet(combinedData);
+    //         let sheetName = bName.substring(0, 31);
+    //         XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    //     });
+
+    //     // Generate file name based on selections
+    //     let fieldsName = selectedFields.length === 1 ? `_${fieldOptions.find(f => f.value === selectedFields[0])?.label}` : `_بيانات_متعددة`;
+    //     const reportName = selectedBranches.length > 1 ? "فروع_محددة" : branchName;
+
+    //     // Write exactly ONE file to prevent browser blocking multiple downloads
+    //     XLSX.writeFile(wb, `تقرير_${reportName}${fieldsName}_${selectedMonth}.xlsx`);
+    // };
 
     return (
         <div className="report-container" style={{ padding: '1rem', direction: 'rtl' }}>
