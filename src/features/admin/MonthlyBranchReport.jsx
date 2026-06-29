@@ -233,20 +233,31 @@ const handleExportExcel = async () => {
 
         worksheet.addRows(combinedData);
 
-        // --- المرور على الصفوف صفاً تلو الآخر لتطبيق التنسيق على مستوى الصف ---
+        // --- إعدادات التنسيق، الحدود، والألوان الغامقة لكل صف ---
         worksheet.eachRow((row, rowNumber) => {
             
-            // 1. تنسيق الأرقام وتلوين السالب بالأحمر لكل خلايا هذا الصف
-            row.eachCell((cell) => {
+            row.eachCell({ includeEmpty: true }, (cell) => {
+                // 1. إضافة حدود رفيعة رمادية (Borders) لكل الخلايا لترتيب الجدول
+                cell.border = {
+                    top: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+                    left: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+                    bottom: { style: 'thin', color: { argb: 'FFD3D3D3' } },
+                    right: { style: 'thin', color: { argb: 'FFD3D3D3' } }
+                };
+
+                // محاذاة البيانات في المنتصف لتنظيم المظهر
+                cell.alignment = { vertical: 'middle', horizontal: 'center' };
+
+                // 2. تنسيق الأرقام وتلوين السالب بالأحمر الغامق وإظهار الأصفار
                 if (typeof cell.value === 'number') {
-                  cell.numFmt = '#,##0;[Red]-#,##0;0';
+                    // [Red] في إكسيل تعطي اللون الأحمر الأساسي القوي والواضح
+                    cell.numFmt = '#,##0;[Red]-#,##0;0'; 
                 }
             });
 
-            // 2. إضافة Data Bar مخصص لهذا الصف فقط (المقارنة أفقية داخل الصف)
-            // النطاق سيكون من العمود A إلى العمود V لنفس رقم الصف الحالي
+            // 3. إضافة الـ Data Bar بلون أزرق غامق وقوي (Royal Blue) لكل صف على حدة
             worksheet.addConditionalFormatting({
-                ref: `A${rowNumber}:V${rowNumber}`, 
+                ref: `A${rowNumber}:W${rowNumber}`, 
                 rules: [
                     {
                         type: 'dataBar',
@@ -254,13 +265,19 @@ const handleExportExcel = async () => {
                         maxLength: 100,
                         showValue: true,
                         cfvo: [
-                            { type: 'min' }, // أصغر قيمة في هذا الصف ستأخذ أصغر بار
-                            { type: 'max' }  // أعلى قيمة في هذا الصف ستأخذ البار الكامل
+                            { type: 'min' },
+                            { type: 'max' }
                         ],
-                        color: { argb: 'FF3399FF' } // اللون الأزرق
+                        // تم تغيير اللون إلى أزرق ملكي غامق وقوي (0041C2 أو 0056B3)
+                        color: { argb: 'FF0056B3' } 
                     }
                 ]
             });
+        });
+
+        // ضبط تلقائي لعرض الأعمدة لتستوعب الأرقام والبارات دون تفكك
+        worksheet.columns.forEach(column => {
+            column.width = 12; 
         });
     });
 

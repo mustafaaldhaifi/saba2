@@ -236,7 +236,7 @@ const DashboardLayout = ({ children, title, role }) => {
                             borderRadius: '12px',
                             border: '1px solid #e2e8f0'
                         }}>
-                            v1.7
+                            v1.8
                         </div>
 
                         {/* Use Name Display */}
