@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { collection, query, where, getDocs } from "firebase/firestore";
 import { db } from '../../config/firebase';
 import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
+import { saveAs } from 'file-saver';
 
 const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName, products: currentProducts }) => {
     const [selectedMonth, setSelectedMonth] = useState(initialMonth || new Date().toISOString().substring(0, 7));
@@ -130,54 +132,237 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
         }
     };
 
-    const handleExport = () => {
-        if (Object.keys(aggregatedData).length === 0) return;
 
-        const targetBranches = branches.filter(b => selectedBranches.includes(b.id));
-        const wb = XLSX.utils.book_new();
-        let combinedData = [];
+    const handleExport = async () => {
+    // شرط الأمان: جلب البيانات فقط إذا تم اختيار الفروع والحقول وتوفرت البيانات
+    if (Object.keys(aggregatedData).length === 0 || selectedBranches.length === 0 || selectedFields.length === 0) return;
 
-        selectedFields.forEach(field => {
-            const fieldLabel = fieldOptions.find(f => f.value === field)?.label || field;
+    const targetBranches = branches.filter(b => selectedBranches.includes(b.id));
+    const workbook = new ExcelJS.Workbook();
+    
+    // إنشاء ورقة عمل مجمعة
+    const worksheet = workbook.addWorksheet("البيانات الشاملة");
+    worksheet.views = [{ showGridLines: true }]; // إظهار خطوط الشبكة الافتراضية
 
-            // 1. Header Row
-            const header = ["المنتج", ...targetBranches.map(b => b.name), "الإجمالي العام"];
-            combinedData.push([`--- تقرير الفروع - ${selectedMonth} - ${fieldLabel} ---`]);
-            combinedData.push(header);
+    let combinedData = [];
+    let headerPositions = [];
+    let currentLine = 1;
 
-            // 2. Data Rows
-            const sortedLinkIds = Object.keys(aggregatedData).sort((a, b) =>
-                aggregatedData[a].name.localeCompare(aggregatedData[b].name)
-            );
+    selectedFields.forEach(field => {
+        const fieldLabel = fieldOptions.find(f => f.value === field)?.label || field;
 
-            sortedLinkIds.forEach(linkId => {
-                const prod = aggregatedData[linkId];
+        // 1. إعداد الترويسة وعناوين الفروع
+        const header = ["المنتج", ...targetBranches.map(b => b.name), "الإجمالي العام"];
+        const titleRowData = [`--- تقرير الفروع - ${selectedMonth} - ${fieldLabel} ---`];
 
-                const isSalesItem = prod.isSales === true || prod.isSales === "true";
-                if (field !== 'sales' && isSalesItem) return;
+        // 2. جلب كافة صفوف البيانات وترتيبها تلقائياً بدون أي فلترة للمنتجات
+        const sortedLinkIds = Object.keys(aggregatedData).sort((a, b) =>
+            aggregatedData[a].name.localeCompare(aggregatedData[b].name)
+        );
 
-                const row = [prod.name];
-                let rowTotal = 0;
+        let fieldRows = [];
 
-                targetBranches.forEach(branch => {
-                    const val = prod.branches[branch.id]?.[field] || 0;
-                    row.push(val);
-                    rowTotal += val;
-                });
+        sortedLinkIds.forEach(linkId => {
+            const prod = aggregatedData[linkId];
 
-                row.push(rowTotal);
-                combinedData.push(row);
+            // شروط المبيعات السابقة الخاصة بك (تُترك كما هي)
+            const isSalesItem = prod.isSales === true || prod.isSales === "true";
+            if (field !== 'sales' && isSalesItem) return;
+
+            const row = [prod.name];
+            let rowTotal = 0;
+
+            targetBranches.forEach(branch => {
+                const val = prod.branches[branch.id]?.[field] || 0;
+                row.push(val);
+                rowTotal += val;
             });
 
-            combinedData.push([]); // Empty row for spacing
+            row.push(rowTotal);
+            fieldRows.push(row);
         });
 
-        const ws = XLSX.utils.aoa_to_sheet(combinedData);
-        XLSX.utils.book_append_sheet(wb, ws, "البيانات الشاملة");
+        // إذا وُجدت بيانات لهذا الحقل، نجهز مواقع التنسيق والدمج
+        if (fieldRows.length > 0) {
+            headerPositions.push({
+                titleRow: currentLine,
+                subHeaderRow: currentLine + 1
+            });
 
-        let fieldsName = selectedFields.length === 1 ? `_${fieldOptions.find(f => f.value === selectedFields[0])?.label}` : `_بيانات_متعددة`;
-        XLSX.writeFile(wb, `Global_Report${fieldsName}_${selectedMonth}.xlsx`);
-    };
+            combinedData = [...combinedData, titleRowData, header, ...fieldRows, []];
+            currentLine += fieldRows.length + 3; // ضبط المؤشر للجدول التالي
+        }
+    });
+
+    if (combinedData.length === 0) return;
+
+    // إضافة البيانات بالكامل إلى الورقة
+    worksheet.addRows(combinedData);
+
+    // حساب أقصى عمود ممتلئ ديناميكياً
+    let maxColumnKey = 1;
+    worksheet.eachRow((row) => {
+        if (row.cellCount > maxColumnKey) maxColumnKey = row.cellCount;
+    });
+    const lastColumnLetter = worksheet.getColumn(maxColumnKey).letter;
+
+    // --- 1. تنسيق ودمج الترويسات الخضراء بالكامل لكل حقل ---
+    headerPositions.forEach(pos => {
+        try { worksheet.mergeCells(`A${pos.titleRow}:${lastColumnLetter}${pos.titleRow}`); } catch (e) {}
+        
+        const titleCell = worksheet.getCell(`A${pos.titleRow}`);
+        titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00B050' } }; // أخضر غامق
+        titleCell.font = { name: 'Segoe UI', color: { argb: 'FFFFFFFF' }, bold: true, size: 12 };
+        titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+        worksheet.getRow(pos.titleRow).height = 25;
+
+        const subHeaderRow = worksheet.getRow(pos.subHeaderRow);
+        subHeaderRow.eachCell({ includeEmpty: true }, (cell) => {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00B050' } };
+            cell.font = { name: 'Segoe UI', color: { argb: 'FFFFFFFF' }, bold: true, size: 11 };
+            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        });
+    });
+
+    let dataRowIndex = 0;
+
+    // --- 2. تنسيق البيانات والتناوب اللوني الغامق والأبيض والسالب ---
+    worksheet.eachRow((row, rowNumber) => {
+        const isHeader = headerPositions.some(pos => rowNumber === pos.titleRow || rowNumber === pos.subHeaderRow);
+        const isEmptyRow = row.values.every(v => v === null || v === undefined || v === '');
+
+        if (!isHeader && !isEmptyRow) {
+            dataRowIndex++;
+            // التناوب اللوني الرمادي الأغمق بناءً على طلبك
+            const rowBgColor = dataRowIndex % 2 === 0 ? 'FFF2F2F2' : 'FFFFFFFF';
+
+            row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+                // الحدود والمحاذاة للوسط
+                cell.border = {
+                    top: { style: 'thin', color: { argb: 'FF000000' } },
+                    left: { style: 'thin', color: { argb: 'FF000000' } },
+                    bottom: { style: 'thin', color: { argb: 'FF000000' } },
+                    right: { style: 'thin', color: { argb: 'FF000000' } }
+                };
+                cell.alignment = { vertical: 'middle', horizontal: 'center' };
+
+                // تلوين الخلفية التناوبية للصف (باستثناء الإجمالي العام)
+                if (colNumber !== maxColumnKey) {
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rowBgColor } };
+                    cell.font = { name: 'Segoe UI', color: { argb: 'FF000000' } };
+                }
+
+                // معالجة الأرقام والأصناف والسوالب والأصناف الصفرية
+                if (typeof cell.value === 'number') {
+                    if (cell.value === 0) {
+                        cell.value = ''; // إخفاء الأصفار لتظهر الخلايا فارغة تماماً
+                    } else if (cell.value < 0) {
+                        // تلوين كامل الخلايا السالبة باللون الأحمر والنص بالأبيض
+                        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } };
+                        cell.font = { name: 'Segoe UI', color: { argb: 'FFFFFFFF' }, bold: true };
+                        cell.numFmt = '#,##0;[White]-#,##0;""';
+                    } else {
+                        cell.numFmt = '#,##0;;""'; // الموجب عادي مع فواصل آلاف
+                    }
+                }
+            });
+
+            // تلوين عمود الإجمالي العام في نهاية كل صف بالأخضر الفاتح المخصص للنتائج
+            const totalCell = row.getCell(maxColumnKey);
+            if (totalCell && totalCell.value !== '') {
+                if (typeof totalCell.value === 'number' && totalCell.value < 0) {
+                    totalCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } };
+                    totalCell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
+                } else {
+                    totalCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' } };
+                    totalCell.font = { color: { argb: 'FF006100' }, bold: true };
+                }
+            }
+        }
+    });
+
+    // --- 3. ضبط ذكي وملموم لعرض الأعمدة بدون مساحات ضائعة ---
+    worksheet.columns.forEach((column, colIndex) => {
+        if (colIndex === 0) {
+            // العمود الأول: اسم المنتج (يأخذ مقاس أطول اسم بالضبط دون التأثر بالعناوين الكبيرة)
+            let maxLen = 12;
+            column.eachCell({ includeEmpty: true }, (cell, rowNumber) => {
+                const isHeader = headerPositions.some(pos => rowNumber === pos.titleRow || rowNumber === pos.subHeaderRow);
+                if (!isHeader && cell.value) {
+                    const len = cell.value.toString().length;
+                    if (len > maxLen) maxLen = len;
+                }
+            });
+            column.width = maxLen + 3;
+        } else if (column.letter === lastColumnLetter) {
+            column.width = 12; // عمود الإجمالي العام النهائي
+        } else {
+            // أعمدة الفروع: تكون ملمومة وصغيرة ومناسبة للأرقام تماماً
+            column.width = 10;
+        }
+    });
+
+    // إعداد اسم الملف النهائي والتحميل المباشر
+    let fieldsName = selectedFields.length === 1 ? `_${fieldOptions.find(f => f.value === selectedFields[0])?.label}` : `_بيانات_متعددة`;
+    const fileName = `Global_Report${fieldsName}_${selectedMonth}.xlsx`;
+
+    try {
+        const buffer = await workbook.xlsx.writeBuffer();
+        const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        saveAs(blob, fileName);
+    } catch (error) {
+        console.error("خطأ أثناء تصدير ملف إكسيل الشامل:", error);
+    }
+};
+
+    // const handleExport = () => {
+    //     if (Object.keys(aggregatedData).length === 0) return;
+
+    //     const targetBranches = branches.filter(b => selectedBranches.includes(b.id));
+    //     const wb = XLSX.utils.book_new();
+    //     let combinedData = [];
+
+    //     selectedFields.forEach(field => {
+    //         const fieldLabel = fieldOptions.find(f => f.value === field)?.label || field;
+
+    //         // 1. Header Row
+    //         const header = ["المنتج", ...targetBranches.map(b => b.name), "الإجمالي العام"];
+    //         combinedData.push([`--- تقرير الفروع - ${selectedMonth} - ${fieldLabel} ---`]);
+    //         combinedData.push(header);
+
+    //         // 2. Data Rows
+    //         const sortedLinkIds = Object.keys(aggregatedData).sort((a, b) =>
+    //             aggregatedData[a].name.localeCompare(aggregatedData[b].name)
+    //         );
+
+    //         sortedLinkIds.forEach(linkId => {
+    //             const prod = aggregatedData[linkId];
+
+    //             const isSalesItem = prod.isSales === true || prod.isSales === "true";
+    //             if (field !== 'sales' && isSalesItem) return;
+
+    //             const row = [prod.name];
+    //             let rowTotal = 0;
+
+    //             targetBranches.forEach(branch => {
+    //                 const val = prod.branches[branch.id]?.[field] || 0;
+    //                 row.push(val);
+    //                 rowTotal += val;
+    //             });
+
+    //             row.push(rowTotal);
+    //             combinedData.push(row);
+    //         });
+
+    //         combinedData.push([]); // Empty row for spacing
+    //     });
+
+    //     const ws = XLSX.utils.aoa_to_sheet(combinedData);
+    //     XLSX.utils.book_append_sheet(wb, ws, "البيانات الشاملة");
+
+    //     let fieldsName = selectedFields.length === 1 ? `_${fieldOptions.find(f => f.value === selectedFields[0])?.label}` : `_بيانات_متعددة`;
+    //     XLSX.writeFile(wb, `Global_Report${fieldsName}_${selectedMonth}.xlsx`);
+    // };
 
     return (
         <div className="card" style={{
@@ -289,21 +474,7 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-                    <button
-                        onClick={handleExport}
-                        className="btn"
-                        disabled={Object.keys(aggregatedData).length === 0}
-                        style={{
-                            marginTop: '1rem',
-                            backgroundColor: '#10b981',
-                            color: 'white',
-                            padding: '0.75rem 2rem',
-                            fontSize: '1rem',
-                            fontWeight: '600'
-                        }}
-                    >
-                        📥 تصدير Excel
-                    </button>
+                   
                     <button
                         onClick={handleStartProcessing}
                         className="btn"

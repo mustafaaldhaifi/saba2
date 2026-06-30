@@ -9,6 +9,7 @@ const MonthlyBranchReport = ({ branchId, branches, city, typeId, products, onClo
     const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().substring(0, 7)); // YYYY-MM
     const [selectedBranches, setSelectedBranches] = useState([branchId]);
     const [selectedFields, setSelectedFields] = useState([]);
+        const [selectedproducts, setSelectedProducts] = useState([]);
     const [monthlyData, setMonthlyData] = useState([]);
     const [initialMonthlyData, setInitialMonthlyData] = useState([]);
     const [loading, setLoading] = useState(false);
@@ -19,14 +20,18 @@ const MonthlyBranchReport = ({ branchId, branches, city, typeId, products, onClo
     const fieldOptions = [
         { value: 'received', label: 'مستلم' },
         { value: 'add', label: 'إضافة' },
+          { value: 'staffMeal', label: 'وجبة موظف' },
+          { value: 'damaged', label: 'تالف' },
+              { value: 'transfer', label: 'تحويل' },
+               { value: 'freeIncrease', label: 'زيادة مجانية' },
+                  { value: 'canceled', label: 'مكنسل' },
         { value: 'sales', label: 'مبيعات' },
-        { value: 'staffMeal', label: 'وجبة موظف' },
-        { value: 'damaged', label: 'تالف' },
-        { value: 'canceled', label: 'مكنسل' },
+      
+        
+          { value: 'directTransfer', label: 'تحويل مباشر' },  
         { value: 'openingStock', label: 'المخزون الإفتتاحي' },
-        { value: 'transfer', label: 'تحويل' },
-        { value: 'directTransfer', label: 'تحويل مباشر' },
-        { value: 'freeIncrease', label: 'زيادة مجانية' },
+    
+   
         { value: 'closeStock', label: 'المتبقي' }
     ];
 
@@ -214,7 +219,8 @@ const MonthlyBranchReport = ({ branchId, branches, city, typeId, products, onClo
     };
 
 const handleExportExcel = async () => {
-    if (selectedFields.length === 0 || selectedBranches.length === 0) return;
+    // 🛑 شرط الأمان الجديد: التأكد من اختيار حقول، فروع، وأصناف (منتجات) أيضاً
+    if (selectedFields.length === 0 || selectedBranches.length === 0 || selectedproducts.length === 0) return;
 
     const workbook = new ExcelJS.Workbook();
 
@@ -222,63 +228,173 @@ const handleExportExcel = async () => {
         const bName = branches?.find(b => b.id === bId)?.name || bId;
         let combinedData = [];
 
+        let headerPositions = [];
+        let currentLine = 1;
+
         selectedFields.forEach((field) => {
             const fieldLabel = fieldOptions.find(f => f.value === field)?.label || field;
-            const fieldData = getFieldData(field, fieldLabel, bId);
-            combinedData = [...combinedData, ...fieldData, []];
+            
+            // 1. جلب البيانات الخام للحقل والفرع الحاليين
+            let fieldData = getFieldData(field, fieldLabel, bId);
+            
+            // 2. 🛠️ فلترة البيانات بناءً على "نوع الأصناف" المختارة فقط
+            if (fieldData && fieldData.length > 2) {
+                const header1 = fieldData[0]; // العنوان الرئيسي (دمج)
+                const header2 = fieldData[1]; // عناوين الأعمدة (المنتج، الأيام...)
+                
+                // تصفية صفوف المنتجات (تبدأ من المؤشر 2 فما فوق)
+                const filteredRows = fieldData.slice(2).filter(row => {
+                    // إذا كان السطر فارغاً (سطر الفصل مثلاً) نتخطى الفلترة
+                    if (!row || row.length === 0) return false;
+                    
+                    // نأخذ اسم المنتج أو الـ ID الخاص به (العمود الأول وعادة ما يكون row[0])
+                    const productName = row[0]; 
+                    
+                    // البحث في قائمة المنتجات الكلية لمطابقة الاسم مع الـ IDs المحددة في selectedproducts
+                    const productObj = products.find(p => p.name === productName || p.id === productName);
+                    
+                    // إذا وجدنا المنتج وكان معرّفه موجوداً ضمن قائمة المحدد، نبقيه في الجدول
+                    return productObj ? selectedproducts.includes(productObj.id) : false;
+                });
+
+                // إعادة بناء مصفوفة البيانات لهذا الحقل (العنوان العلوي + الأيام + المنتجات المفلترة فقط)
+                if (filteredRows.length > 0) {
+                    fieldData = [header1, header2, ...filteredRows];
+                } else {
+                    fieldData = []; // إذا لم يطابق أي منتج، لا نعرض هذا الجدول
+                }
+            }
+
+            // إذا كان هناك بيانات بعد الفلترة، نقوم بجدولتها
+            if (fieldData && fieldData.length > 0) {
+                headerPositions.push({
+                    titleRow: currentLine,
+                    subHeaderRow: currentLine + 1
+                });
+                
+                combinedData = [...combinedData, ...fieldData, []];
+                currentLine += fieldData.length + 1;
+            }
         });
 
-        let sheetName = bName.substring(0, 31);
-        const worksheet = workbook.addWorksheet(sheetName);
+        // إذا كان هناك بيانات متبقية للفرع بالكامل بعد التصفية، نقوم بإنشاء الورقة وتنسيقها
+        if (combinedData.length > 0) {
+            let sheetName = bName.substring(0, 31);
+            const worksheet = workbook.addWorksheet(sheetName);
 
-        worksheet.addRows(combinedData);
+            worksheet.views = [{ showGridLines: true }];
+            worksheet.addRows(combinedData);
 
-        // --- إعدادات التنسيق، الحدود، والألوان الغامقة لكل صف ---
-        worksheet.eachRow((row, rowNumber) => {
-            
-            row.eachCell({ includeEmpty: true }, (cell) => {
-                // 1. إضافة حدود رفيعة رمادية (Borders) لكل الخلايا لترتيب الجدول
-                cell.border = {
-                    top: { style: 'thin', color: { argb: 'FFD3D3D3' } },
-                    left: { style: 'thin', color: { argb: 'FFD3D3D3' } },
-                    bottom: { style: 'thin', color: { argb: 'FFD3D3D3' } },
-                    right: { style: 'thin', color: { argb: 'FFD3D3D3' } }
-                };
+            let maxColumnKey = 1;
+            worksheet.eachRow((row) => {
+                if (row.cellCount > maxColumnKey) maxColumnKey = row.cellCount;
+            });
+            const lastColumnLetter = worksheet.getColumn(maxColumnKey).letter;
 
-                // محاذاة البيانات في المنتصف لتنظيم المظهر
-                cell.alignment = { vertical: 'middle', horizontal: 'center' };
+            // تلوين الترويسات الخضراء
+            headerPositions.forEach(pos => {
+                try { worksheet.mergeCells(`A${pos.titleRow}:${lastColumnLetter}${pos.titleRow}`); } catch (e) {}
+                
+                const titleCell = worksheet.getCell(`A${pos.titleRow}`);
+                titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00B050' } };
+                titleCell.font = { name: 'Segoe UI', color: { argb: 'FFFFFFFF' }, bold: true, size: 12 };
+                titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+                worksheet.getRow(pos.titleRow).height = 25;
 
-                // 2. تنسيق الأرقام وتلوين السالب بالأحمر الغامق وإظهار الأصفار
-                if (typeof cell.value === 'number') {
-                    // [Red] في إكسيل تعطي اللون الأحمر الأساسي القوي والواضح
-                    cell.numFmt = '#,##0;[Red]-#,##0;0'; 
+                const subHeaderRow = worksheet.getRow(pos.subHeaderRow);
+                subHeaderRow.eachCell({ includeEmpty: true }, (cell) => {
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00B050' } };
+                    cell.font = { name: 'Segoe UI', color: { argb: 'FFFFFFFF' }, bold: true, size: 11 };
+                    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+                });
+            });
+
+            let dataRowIndex = 0;
+
+            // تنسيق البيانات والـ Zebra والـ DataBars والحدود والسالب
+            worksheet.eachRow((row, rowNumber) => {
+                const isHeader = headerPositions.some(pos => rowNumber === pos.titleRow || rowNumber === pos.subHeaderRow);
+                const isEmptyRow = row.values.every(v => v === null || v === undefined || v === '');
+
+                if (!isHeader && !isEmptyRow) {
+                    dataRowIndex++;
+                    const rowBgColor = dataRowIndex % 2 === 0 ? 'FFF2F2F2' : 'FFFFFFFF'; // الرمادي الأكثر غماقة بناءً على طلبك السابق
+
+                    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+                        cell.border = {
+                            top: { style: 'thin', color: { argb: 'FF000000' } },
+                            left: { style: 'thin', color: { argb: 'FF000000' } },
+                            bottom: { style: 'thin', color: { argb: 'FF000000' } },
+                            right: { style: 'thin', color: { argb: 'FF000000' } }
+                        };
+                        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+
+                        if (colNumber !== maxColumnKey) {
+                            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rowBgColor } };
+                            cell.font = { name: 'Segoe UI', color: { argb: 'FF000000' } };
+                        }
+
+                        if (typeof cell.value === 'number') {
+                            if (cell.value === 0) {
+                                cell.value = '';
+                            } else if (cell.value < 0) {
+                                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } };
+                                cell.font = { name: 'Segoe UI', color: { argb: 'FFFFFFFF' }, bold: true };
+                                cell.numFmt = '#,##0;[White]-#,##0;""';
+                            } else {
+                                cell.numFmt = '#,##0;;""';
+                            }
+                        }
+                    });
+
+                    // تلوين الإجمالي بالأخضر الفاتح
+                    const totalCell = row.getCell(maxColumnKey);
+                    if (totalCell && totalCell.value !== '') {
+                        if (typeof totalCell.value === 'number' && totalCell.value < 0) {
+                            totalCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } };
+                            totalCell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
+                        } else {
+                            totalCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' } };
+                            totalCell.font = { color: { argb: 'FF006100' }, bold: true };
+                        }
+                    }
+
+                    // إضافة الـ Data Bars
+                    worksheet.addConditionalFormatting({
+                        ref: `B${rowNumber}:${worksheet.getColumn(maxColumnKey - 1).letter}${rowNumber}`, 
+                        rules: [
+                            {
+                                type: 'dataBar',
+                                minLength: 0,
+                                maxLength: 100,
+                                showValue: true,
+                                cfvo: [{ type: 'min' }, { type: 'max' }],
+                                color: { argb: 'FF4F81BD' }
+                            }
+                        ]
+                    });
                 }
             });
 
-            // 3. إضافة الـ Data Bar بلون أزرق غامق وقوي (Royal Blue) لكل صف على حدة
-            worksheet.addConditionalFormatting({
-                ref: `A${rowNumber}:W${rowNumber}`, 
-                rules: [
-                    {
-                        type: 'dataBar',
-                        minLength: 0,
-                        maxLength: 100,
-                        showValue: true,
-                        cfvo: [
-                            { type: 'min' },
-                            { type: 'max' }
-                        ],
-                        // تم تغيير اللون إلى أزرق ملكي غامق وقوي (0041C2 أو 0056B3)
-                        color: { argb: 'FF0056B3' } 
-                    }
-                ]
+            // ضبط عرض الأعمدة الصارم والملموم
+            worksheet.columns.forEach((column, colIndex) => {
+                if (colIndex === 0) {
+                    let maxLen = 12;
+                    column.eachCell({ includeEmpty: true }, (cell, rowNumber) => {
+                        const isHeader = headerPositions.some(pos => rowNumber === pos.titleRow || rowNumber === pos.subHeaderRow);
+                        if (!isHeader && cell.value) {
+                            const len = cell.value.toString().length;
+                            if (len > maxLen) maxLen = len;
+                        }
+                    });
+                    column.width = maxLen + 3; 
+                } else if (column.letter === lastColumnLetter) {
+                    column.width = 10;
+                } else {
+                    column.width = 5.5;
+                }
             });
-        });
-
-        // ضبط تلقائي لعرض الأعمدة لتستوعب الأرقام والبارات دون تفكك
-        worksheet.columns.forEach(column => {
-            column.width = 12; 
-        });
+        }
     });
 
     let fieldsName = selectedFields.length === 1 ? `_${fieldOptions.find(f => f.value === selectedFields[0])?.label}` : `_بيانات_متعددة`;
@@ -340,43 +456,135 @@ const handleExportExcel = async () => {
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.5rem', marginBottom: '1.5rem', padding: '1rem', backgroundColor: '#f8fafc', borderRadius: '8px' }}>
-                <div className="input-group" style={{ marginBottom: 0 }}>
-                    <label style={{ display: 'block', marginBottom: '8px', fontSize: '12px', color: '#475569', fontWeight: 'bold' }}>الفروع المختارة</label>
-                    <div style={{ maxHeight: '120px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '0.5rem', backgroundColor: '#fff' }}>
-                        {branches && branches.map(b => (
-                            <label key={b.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '11px' }}>
-                                <input
-                                    type="checkbox"
-                                    checked={selectedBranches.includes(b.id)}
-                                    onChange={(e) => {
-                                        if (e.target.checked) setSelectedBranches([...selectedBranches, b.id]);
-                                        else setSelectedBranches(selectedBranches.filter(id => id !== b.id));
-                                    }}
-                                />
-                                {b.name}
-                            </label>
-                        ))}
-                    </div>
-                </div>
+              <div className="input-group" style={{ marginBottom: 0 }}>
+    <label style={{ display: 'block', marginBottom: '8px', fontSize: '12px', color: '#475569', fontWeight: 'bold' }}>الفروع المختارة</label>
+    <div style={{ maxHeight: '120px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '0.5rem', backgroundColor: '#fff' }}>
+        
+        {/* ---- خيار تحديد الكل للفروع ---- */}
+        {branches && branches.length > 0 && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0 6px 0', fontSize: '11px', fontWeight: 'bold', borderBottom: '1px dashed #cbd5e1', marginBottom: '4px' }}>
+                <input
+                    type="checkbox"
+                    // يكون محدد تلقائياً إذا كان عدد الفروع المختارة يساوي العدد الكلي للفروع المتاحة
+                    checked={selectedBranches.length === branches.length}
+                    onChange={(e) => {
+                        if (e.target.checked) {
+                            // تحديد كافة معرفات (IDs) الفروع
+                            setSelectedBranches(branches.map(b => b.id));
+                        } else {
+                            // إلغاء تحديد كل الفروع
+                            setSelectedBranches([]);
+                        }
+                    }}
+                />
+                تحديد الكل
+            </label>
+        )}
+
+        {/* ---- قائمة الفروع الافتراضية ---- */}
+        {branches && branches.map(b => (
+            <label key={b.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '11px' }}>
+                <input
+                    type="checkbox"
+                    checked={selectedBranches.includes(b.id)}
+                    onChange={(e) => {
+                        if (e.target.checked) setSelectedBranches([...selectedBranches, b.id]);
+                        else setSelectedBranches(selectedBranches.filter(id => id !== b.id));
+                    }}
+                />
+                {b.name}
+            </label>
+        ))}
+    </div>
+</div>
 
                 <div className="input-group" style={{ marginBottom: 0 }}>
-                    <label style={{ display: 'block', marginBottom: '8px', fontSize: '12px', color: '#475569', fontWeight: 'bold' }}>نوع البيانات</label>
-                    <div style={{ maxHeight: '120px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '0.5rem', backgroundColor: '#fff' }}>
-                        {fieldOptions.map(f => (
-                            <label key={f.value} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '11px' }}>
-                                <input
-                                    type="checkbox"
-                                    checked={selectedFields.includes(f.value)}
-                                    onChange={(e) => {
-                                        if (e.target.checked) setSelectedFields([...selectedFields, f.value]);
-                                        else setSelectedFields(selectedFields.filter(v => v !== f.value));
-                                    }}
-                                />
-                                {f.label}
-                            </label>
-                        ))}
-                    </div>
-                </div>
+    <label style={{ display: 'block', marginBottom: '8px', fontSize: '12px', color: '#475569', fontWeight: 'bold' }}>نوع البيانات</label>
+    <div style={{ maxHeight: '120px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '0.5rem', backgroundColor: '#fff' }}>
+        
+        {/* ---- خيار تحديد الكل ---- */}
+        {fieldOptions.length > 0 && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0 6px 0', fontSize: '11px', fontWeight: 'bold', borderBottom: '1px dashed #cbd5e1', marginBottom: '4px' }}>
+                <input
+                    type="checkbox"
+                    // يكون محدد إذا كان طول المصفوفة المحددة يساوي طول المصفوفة الكلية
+                    checked={selectedFields.length === fieldOptions.length}
+                    onChange={(e) => {
+                        if (e.target.checked) {
+                            // تحديد كل القيم
+                            setSelectedFields(fieldOptions.map(f => f.value));
+                        } else {
+                            // إلغاء تحديد الكل (مصفوفة فارغة)
+                            setSelectedFields([]);
+                        }
+                    }}
+                />
+                تحديد الكل
+            </label>
+        )}
+
+        {/* ---- قائمة الحقول الافتراضية ---- */}
+        {fieldOptions.map(f => (
+            <label key={f.value} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '11px' }}>
+                <input
+                    type="checkbox"
+                    checked={selectedFields.includes(f.value)}
+                    onChange={(e) => {
+                        if (e.target.checked) setSelectedFields([...selectedFields, f.value]);
+                        else setSelectedFields(selectedFields.filter(v => v !== f.value));
+                    }}
+                />
+                {f.label}
+            </label>
+        ))}
+    </div>
+</div>
+
+
+<div className="input-group" style={{ marginBottom: 0 }}>
+    <label style={{ display: 'block', marginBottom: '8px', fontSize: '12px', color: '#475569', fontWeight: 'bold' }}>نوع الاصناف</label>
+    <div style={{ maxHeight: '120px', overflowY: 'auto', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '0.5rem', backgroundColor: '#fff' }}>
+        
+        {/* ---- خيار تحديد الكل ---- */}
+        {products && products.length > 0 && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0 6px 0', fontSize: '11px', fontWeight: 'bold', borderBottom: '1px dashed #cbd5e1', marginBottom: '4px' }}>
+                <input
+                    type="checkbox"
+                    // التحقق من أن جميع معرّفات المنتجات موجودة في قائمة المحدد
+                    checked={selectedproducts.length === products.length}
+                    onChange={(e) => {
+                        if (e.target.checked) {
+                            // تم التعديل هنا: نأخذ f.id ليتوافق مع بقية الكود
+                            setSelectedProducts(products.map(f => f.id));
+                        } else {
+                            // تم تصحيح اسم الدالة هنا لإلغاء تحديد الكل بأمان
+                            setSelectedProducts([]);
+                        }
+                    }}
+                />
+                تحديد الكل
+            </label>
+        )}
+
+        {/* ---- قائمة المنتجات الافتراضية ---- */}
+        {products && products.map(f => (
+            <label key={f.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '11px' }}>
+                <input
+                    type="checkbox"
+                    checked={selectedproducts.includes(f.id)}
+                    onChange={(e) => {
+                        if (e.target.checked) {
+                            setSelectedProducts([...selectedproducts, f.id]);
+                        } else {
+                            setSelectedProducts(selectedproducts.filter(v => v !== f.id));
+                        }
+                    }}
+                />
+                {f.name}
+            </label>
+        ))}
+    </div>
+</div>
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem', borderBottom: '1px solid #f1f5f9', paddingBottom: '1.5rem' }}>
