@@ -17,13 +17,14 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
     const [cityFilter, setCityFilter] = useState(cityName || 'all');
 
     const fieldOptions = [
+         { value: 'openingStock', label: 'الرصيد الموجود' },
         { value: 'received', label: 'المستلم' },
         { value: 'add', label: 'الجرد' },
         { value: 'sales', label: 'مبيعات' },
         { value: 'staffMeal', label: 'وجبة موظف' },
         { value: 'damaged', label: 'التالف' },
         { value: 'canceled', label: 'الملغي' },
-        { value: 'openingStock', label: 'الرصيد الموجود' },
+       
         { value: 'transfer', label: 'تحويل' },
         { value: 'directTransfer', label: 'تجهيز مباشر' },
         { value: 'freeIncrease', label: 'تعويض زبون' },
@@ -73,8 +74,34 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                 const snap = await getDocs(q);
 
                 snap.docs.forEach(doc => {
+                   
+                    
                     const data = doc.data();
-                    const productId = data.productId;
+                     const productId = data.productId;
+
+
+                     // 2. فلترة وترتيب مفاتيح الأيام (مثل days.01, days.02) تصاعدياً
+    // const dayKeys = Object.keys(data)
+    //     .filter(key => key.startsWith('days.'))
+    //     .sort((a, b) => Number(a.split('.')[1]) - Number(b.split('.')[1]));
+
+    // // تهيئة المتغيرات بقيم صفرية افتراضية
+    // data.openingStock_pure = 0;
+    // data.remaining_pure = 0;
+
+    // // 3. استخراج القيم النقية وحفظها مباشرة داخل نفس كائن المستند المستقل (docData)
+    // if (dayKeys.length > 0) {
+    //     const firstDayKey = dayKeys[0];
+    //     const lastDayKey = dayKeys[dayKeys.length - 1];
+
+    //     // أول يوم للموجودة (الافتتاحي)
+    //     data.openingStock_pure = data[firstDayKey]?.openingStock || 0;
+    //     console.log(data.openingStock_pure);
+        
+        
+    //     // آخر يوم للمتبقي (closeStock)
+    //     data.remaining_pure = data[lastDayKey]?.closeStock || 0;
+    // }
                     if (!productId) return;
 
                     // Find product linkId or use productId as fallback
@@ -110,6 +137,18 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                         }
                     });
 
+                    // 1. ترتيب الأيام تصاعدياً لمعرفة أول يوم وآخر يوم في الشهر
+const sortedDays = Object.keys(dayValuesMap).sort((a, b) => Number(a) - Number(b));
+
+if (sortedDays.length > 0) {
+    const firstDayKey = sortedDays[0];
+    const lastDayKey = sortedDays[sortedDays.length - 1];
+
+    // 2. تخزين القيمة الصافية للافتتاحي (أول يوم) والختامي (آخر يوم) بدون أي جمع تراكمي
+    results[linkId].branches[branch.id].openingStock_pure = Number(dayValuesMap[firstDayKey]?.openingStock || 0);
+    results[linkId].branches[branch.id].remaining_pure = Number(dayValuesMap[lastDayKey]?.closeStock || 0);
+}
+
                     // Sum the values for all selected fields across all collected days
                     selectedFields.forEach(field => {
                         let totalVal = 0;
@@ -135,6 +174,7 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
 
     const handleExport = async () => {
     // شرط الأمان: جلب البيانات فقط إذا تم اختيار الفروع والحقول وتوفرت البيانات
+    
     if (Object.keys(aggregatedData).length === 0 || selectedBranches.length === 0 || selectedFields.length === 0) return;
 
     const targetBranches = branches.filter(b => selectedBranches.includes(b.id));
@@ -312,6 +352,219 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
         saveAs(blob, fileName);
     } catch (error) {
         console.error("خطأ أثناء تصدير ملف إكسيل الشامل:", error);
+    }
+};
+
+
+const handleExport2 = async () => {
+    // شرط الأمان الأساسي لمنع التصدير في حال عدم وجود بيانات
+    if (Object.keys(aggregatedData).length === 0 || selectedBranches.length === 0 || selectedFields.length === 0) return;
+
+    const targetBranches = branches.filter(b => selectedBranches.includes(b.id));
+    const workbook = new ExcelJS.Workbook();
+
+    // نمر على كل فرع لإنشاء صفحة (Sheet) مستقلة له
+    targetBranches.forEach(branch => {
+        // اسم الصفحة لا يتعدى 31 حرفاً حسب شروط إكسيل
+        let sheetName = branch.name.substring(0, 31);
+        const worksheet = workbook.addWorksheet(sheetName);
+        worksheet.views = [{ showGridLines: true }]; // إظهار خطوط الشبكة في ملف الإكسيل
+
+        let combinedData = [];
+        
+        // بناء الترويسة العلوية بناءً على الحقول المختارة من الواجهة
+        const fieldLabels = selectedFields.map(f => fieldOptions.find(opt => opt.value === f)?.label || f);
+        const header = ["المنتج", ...fieldLabels, "الإجمالي العام"];
+        
+        const titleRowData = [`--- تقرير فرع: ${branch.name} - لشهر: ${selectedMonth} ---`];
+        combinedData.push(titleRowData);
+        combinedData.push(header);
+
+        // ترتيب المنتجات أبجدياً
+        const sortedLinkIds = Object.keys(aggregatedData).sort((a, b) =>
+            aggregatedData[a].name.localeCompare(aggregatedData[b].name)
+        );
+
+        let fieldRows = [];
+        let columnTotals = new Array(selectedFields.length).fill(0); // مصفوفة لجمع عمود كل حقل
+        let grandTotal = 0; // الإجمالي العام النهائي للفرع بالكامل
+
+        sortedLinkIds.forEach(linkId => {
+            const prod = aggregatedData[linkId];
+            const prodBranchData = prod.branches[branch.id];
+
+            // إذا لم تكن هناك بيانات لهذا المنتج في هذا الفرع نتخطاه
+            if (!prodBranchData) return;
+
+            const row = [prod.name];
+            let rowTotal = 0;
+
+            // نمر على الحقول المحددة لتصبح هي الأعمدة الأفقية للجدول
+            selectedFields.forEach((field, index) => {
+                let val = 0;
+
+                // 🛑 1. إذا كان الحقل هو الموجودة (الافتتاحي) خذ القيمة الأولى النظيفة بدون جمع
+                if (field === 'existing' || field === 'الموجودة' || field === 'openingStock') {
+                   
+                    
+                    val = prodBranchData.openingStock_pure !== undefined ? prodBranchData.openingStock_pure : (prodBranchData[field] || 0);
+                } 
+                // 🛑 2. إذا كان الحقل هو المتبقي (الختامي) خذ القيمة الأخيرة النظيفة بدون جمع
+                else if (field === 'closeStock' || field === 'المتبقي') {
+                     console.log(prodBranchData.remaining_pure);
+                    val = prodBranchData.remaining_pure !== undefined ? prodBranchData.remaining_pure : (prodBranchData[field] || 0);
+                } 
+                // 📝 3. بقية الأعمدة (مبيعات، مستلم، تالف.. إلخ) تظل تجميعية للشهر كامل كما هي
+                else {
+                    val = prodBranchData[field] || 0;
+                }
+
+                // شرط المبيعات الخاص بك للأصناف غير المخصصة للبيع
+                const isSalesItem = prod.isSales === true || prod.isSales === "true";
+                if (field !== 'sales' && isSalesItem) {
+                    val = 0; 
+                }
+
+                row.push(val);
+                rowTotal += val;
+                columnTotals[index] += val; // الجمع العمودي لصف الإجمالي السفلي
+            });
+
+            row.push(rowTotal);
+            grandTotal += rowTotal;
+            fieldRows.push(row);
+        });
+
+        // إذا لم تكن هناك بيانات للفرع، ننتقل للفرع التالي
+        if (fieldRows.length === 0) return;
+
+        // بناء صف الإجمالي السفلي المخصص لكل فرع
+        const totalRowData = ["الإجمالي", ...columnTotals, grandTotal];
+
+        // دمج كل الصفوف للفرع الحالي وضخها في الورقة (Sheet)
+        combinedData = [...combinedData, ...fieldRows, totalRowData];
+        worksheet.addRows(combinedData);
+
+        // ==================== التنسيقات البصرية (Design & Styling) ====================
+        const lastColumnLetter = worksheet.getColumn(header.length).letter;
+        const totalRowLine = worksheet.rowCount; // رقم سطر الإجمالي السفلي الأخير
+
+        // أ) دمج وتنسيق العنوان الرئيسي للفرع (اللون الأخضر الغامق)
+        try { worksheet.mergeCells(`A1:${lastColumnLetter}1`); } catch (e) {}
+        const titleCell = worksheet.getCell('A1');
+        titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00B050' } };
+        titleCell.font = { name: 'Segoe UI', color: { argb: 'FFFFFFFF' }, bold: true, size: 12 };
+        titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+        worksheet.getRow(1).height = 25;
+
+        // ب) تنسيق ترويسة الأعمدة (الحقول المختارة)
+        const subHeaderRow = worksheet.getRow(2);
+        subHeaderRow.eachCell({ includeEmpty: true }, (cell) => {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF00B050' } };
+            cell.font = { name: 'Segoe UI', color: { argb: 'FFFFFFFF' }, bold: true, size: 11 };
+            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        });
+
+        // ج) تنسيق صفوف البيانات والتناوب اللوني (Zebra Rows) والأسعار والسوالب واختفاء الأصفار
+        let dataRowIndex = 0;
+        worksheet.eachRow((row, rowNumber) => {
+            if (rowNumber <= 2) return; // تخطي العناوين
+
+            // تنسيق صف الإجمالي السفلي للفرع (خلفية خضراء فاتحة وخط مزدوج بالأسفل)
+            if (rowNumber === totalRowLine) {
+                row.eachCell({ includeEmpty: true }, (cell) => {
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' } };
+                    cell.font = { name: 'Segoe UI', color: { argb: 'FF006100' }, bold: true, size: 11 };
+                    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+                    cell.border = {
+                        top: { style: 'thin', color: { argb: 'FF000000' } },
+                        left: { style: 'thin', color: { argb: 'FF000000' } },
+                        bottom: { style: 'double', color: { argb: 'FF000000' } },
+                        right: { style: 'thin', color: { argb: 'FF000000' } }
+                    };
+                    if (typeof cell.value === 'number') cell.numFmt = '#,##0;;""';
+                });
+                return;
+            }
+
+            // الصفوف العادية للمنتجات
+            dataRowIndex++;
+            const rowBgColor = dataRowIndex % 2 === 0 ? 'FFF2F2F2' : 'FFFFFFFF';
+
+            row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+                cell.border = {
+                    top: { style: 'thin', color: { argb: 'FF000000' } },
+                    left: { style: 'thin', color: { argb: 'FF000000' } },
+                    bottom: { style: 'thin', color: { argb: 'FF000000' } },
+                    right: { style: 'thin', color: { argb: 'FF000000' } }
+                };
+                cell.alignment = { vertical: 'middle', horizontal: 'center' };
+
+                // تطبيق التناوب اللوني على كافة الأعمدة عدا العمود الأخير (عمود الإجمالي الأفقي)
+                if (colNumber !== header.length) {
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: rowBgColor } };
+                    cell.font = { name: 'Segoe UI', color: { argb: 'FF000000' } };
+                }
+
+                if (typeof cell.value === 'number') {
+                    if (cell.value === 0) {
+                        cell.value = ''; // إخفاء الأصفار لجعل الشاشة ملمومة ومريحة للعين
+                    } else if (cell.value < 0) {
+                        // تلوين القيم السالبة باللون الأحمر تلقائياً لتنبيه الإدارة
+                        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } };
+                        cell.font = { name: 'Segoe UI', color: { argb: 'FFFFFFFF' }, bold: true };
+                        cell.numFmt = '#,##0;[White]-#,##0;""';
+                    } else {
+                        cell.numFmt = '#,##0;;""';
+                    }
+                }
+            });
+
+            // د) تلوين عمود الإجمالي العام لكل منتج بالأخضر الفاتح لسهولة القراءة
+            const totalCell = row.getCell(header.length);
+            if (totalCell && totalCell.value !== '') {
+                if (typeof totalCell.value === 'number' && totalCell.value < 0) {
+                    totalCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } };
+                    totalCell.font = { color: { argb: 'FFFFFFFF' }, bold: true };
+                } else {
+                    totalCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' } };
+                    totalCell.font = { color: { argb: 'FF006100' }, bold: true };
+                }
+            }
+        });
+
+        // هـ) ضبط عرض الأعمدة بشكل تلقائي ومحكم ليتناسب مع أطوال أسماء المنتجات
+        worksheet.columns.forEach((column, colIndex) => {
+            if (colIndex === 0) {
+                let maxLen = 12;
+                column.eachCell({ includeEmpty: true }, (cell, rowNumber) => {
+                    if (rowNumber > 2 && cell.value) {
+                        const len = cell.value.toString().length;
+                        if (len > maxLen) maxLen = len;
+                    }
+                });
+                column.width = maxLen + 3; // عرض عمود المنتج
+            } else if (colIndex === header.length - 1) {
+                column.width = 14; // عرض عمود الإجمالي العام
+            } else {
+                column.width = 12; // عرض أعمدة الحقول الأخرى
+            }
+        });
+    });
+
+    // إذا لم يتم إنشاء صفحات عمل، نخرج من الدالة
+    if (workbook.worksheets.length === 0) return;
+
+    // تسمية وتنزيل الملف بصيغة إكسيل المعتمدة
+    let fieldsName = selectedFields.length === 1 ? `_${fieldOptions.find(f => f.value === selectedFields[0])?.label}` : `_حقول_متعددة`;
+    const fileName = `تقرير_جرد_الفروع${fieldsName}_${selectedMonth}.xlsx`;
+
+    try {
+        const buffer = await workbook.xlsx.writeBuffer();
+        const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        saveAs(blob, fileName);
+    } catch (error) {
+        console.error("خطأ أثناء استخراج وتصدير ملف الإكسيل المطور:", error);
     }
 };
 
@@ -523,6 +776,14 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                         style={{ backgroundColor: '#10b981', color: 'white', padding: '1rem 2.5rem', fontSize: '1.1rem', fontWeight: '700' }}
                     >
                         📊 تحميل ملف Excel الشامل
+                    </button>
+
+                     <button
+                        onClick={handleExport2}
+                        className="btn"
+                        style={{ backgroundColor: '#10b981', color: 'white', padding: '1rem 2.5rem', fontSize: '1.1rem', fontWeight: '700' }}
+                    >
+                        📊 تحميل ملف Excel ملخص
                     </button>
                 </div>
             )}

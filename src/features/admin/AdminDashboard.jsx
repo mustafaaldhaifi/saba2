@@ -1182,7 +1182,7 @@ const AdminDashboard = () => {
                         </h2>
                         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
                             {/* Search Input */}
-                            <div style={{ position: 'relative' }}>
+                            {/* <div style={{ position: 'relative' }}>
                                 <input
                                     type="text"
                                     placeholder="بحث عن منتج..."
@@ -1201,7 +1201,7 @@ const AdminDashboard = () => {
                                     onBlur={(e) => e.target.style.borderColor = '#e2e8f0'}
                                 />
                                 <span style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }}>🔍</span>
-                            </div>
+                            </div> */}
 
                             <div style={{ display: 'flex', gap: '0.5rem' }}>
                             {activeTab === 'products' && (
