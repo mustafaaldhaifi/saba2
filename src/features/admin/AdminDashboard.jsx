@@ -6,6 +6,7 @@ import { db } from '../../config/firebase';
 import MonthlyBranchReport from './MonthlyBranchReport';
 import GlobalMonthlyReport from './GlobalMonthlyReport';
 import ProductCorrectionModal from './ProductCorrectionModal';
+import ColumnConstraintsManager from "./ColumnConstraintForm";
 
 // Helper: Calculate Remaining Stock
 // Helper: Calculate Remaining Stock
@@ -1175,6 +1176,7 @@ const AdminDashboard = () => {
                         </div>
                     </div>
 
+<ColumnConstraintsManager branches={branches} items={products} />
                     {/* Products Action Bar */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
                         <h2 style={{ fontSize: '1.5rem', color: activeTab === 'reports' ? '#10b981' : 'hsl(var(--color-primary))', fontWeight: '700' }}>
