@@ -298,36 +298,39 @@ const ConstraintFormModal = ({
   };
 
   // --- التحكم بالقيم الافتراضية والحد الأقصى ---
-  const handleDefaultValueChange = (itemId, field, value) => {
-    setItemConfigurations((prev) => ({
-      ...prev,
-      [itemId]: {
-        ...prev[itemId],
-        defaultValue: {
-          staffMeal: {
-            ...prev[itemId]?.defaultValue?.staffMeal,
-            [field]: value
-          }
-        }
-      }
-    }));
-  };
+   
 
-  const handleMaxValueChange = (itemId, colKey, field, value) => {
-    setItemConfigurations((prev) => ({
+const handleDefaultValueChange = (itemId, field, value) => {
+  setItemConfigurations((prev) => {
+    const currentItem = prev[itemId] || {};
+    const currentDefaultValue = currentItem.defaultValue || {};
+    
+    // جلب قيم staffMeal الحالية أو وضع قيم أولية فقط إذا لم تكن موجودة مطلقًا
+    const currentStaffMeal = currentDefaultValue.staffMeal || { enabled: true, qnt: 0 };
+
+    // معالجة القيمة بناءً على نوع الحقل
+    let newValue = value;
+    if (field === "qnt") {
+      newValue = Number(value);
+    } else if (field === "enabled") {
+      newValue = Boolean(value); // التأكد الصريح أن القيمة boolean (true/false)
+    }
+
+    return {
       ...prev,
       [itemId]: {
-        ...prev[itemId],
-        maxValue: {
-          ...prev[itemId]?.maxValue,
-          [colKey]: {
-            ...prev[itemId]?.maxValue?.[colKey],
-            [field]: value
+        ...currentItem,
+        defaultValue: {
+          ...currentDefaultValue,
+          staffMeal: {
+            ...currentStaffMeal,
+            [field]: newValue // تحديث القيمة بـ false أو true بدقة
           }
         }
       }
-    }));
-  };
+    };
+  });
+};
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -591,14 +594,7 @@ const ConstraintFormModal = ({
                             عمود وجبة الموظف (staffMeal فقط):
                           </span>
                           <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                            <label style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "0.85rem" }}>
-                              <input
-                                type="checkbox"
-                                checked={itemConfigurations[itemId]?.defaultValue?.staffMeal?.enabled ?? true}
-                                onChange={(e) => handleDefaultValueChange(itemId, "enabled", e.target.checked)}
-                              />
-                              <span>تفعيل</span>
-                            </label>
+                           
 
                             <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                               <span style={{ fontSize: "0.85rem" }}>الكمية الافتراضية (qnt):</span>
