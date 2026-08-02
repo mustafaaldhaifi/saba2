@@ -332,6 +332,22 @@ const handleDefaultValueChange = (itemId, field, value) => {
   });
 };
 
+ const handleMaxValueChange = (itemId, colKey, field, value) => {
+    setItemConfigurations((prev) => ({
+      ...prev,
+      [itemId]: {
+        ...prev[itemId],
+        maxValue: {
+          ...prev[itemId]?.maxValue,
+          [colKey]: {
+            ...prev[itemId]?.maxValue?.[colKey],
+            [field]: value
+          }
+        }
+      }
+    }));
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!name.trim()) {
