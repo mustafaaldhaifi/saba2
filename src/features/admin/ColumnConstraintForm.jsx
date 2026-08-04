@@ -3,7 +3,11 @@ import {
   subscribeToConstraints,
   addConstraint,
   updateConstraint,
-  deleteConstraint
+  deleteConstraint,
+  addWeeklyQuotaGroup,
+  saveWeeklyQuotaGroup,
+  deleteWeeklyQuotaGroup,
+  generateQuotaGroupId
 } from "./columnConstraintsService";
 
 /**
@@ -11,7 +15,33 @@ import {
  * تقوم بتنظيف وتنسيق الكائن قبل إرساله لقواعد البيانات
  */
 export const cleanConstraintPayload = (rawForm, allBranches = [], allItems = []) => {
-  const { name, action, dates, selectedBranchIds, selectedItemIds, globalLockColumns, itemConfigurations } = rawForm;
+  const { name, action, dates, selectedBranchIds, selectedItemIds, globalLockColumns, itemConfigurations, weeklySharedProducts, weeklyBranchUsed } = rawForm;
+
+  // الحصة الأسبوعية: document منفصل لكل فرع (هيكل a.json)
+  if (action === "weekly_quota") {
+    const sharedEntries = Object.entries(weeklySharedProducts || {})
+      .filter(([, v]) => v.amount !== "" && v.amount !== undefined && v.amount !== null);
+
+    const quotaGroupId = rawForm.quotaGroupId || generateQuotaGroupId();
+    const now = new Date().toISOString();
+
+    const weeklyQuotaDocuments = selectedBranchIds
+      .map((branchId) => ({
+        name: name?.trim() || "قيد بدون عنوان",
+        action: "weekly_quota",
+        branchId,
+        products: sharedEntries.map(([productId, v]) => ({
+          productId,
+          amount: Number(v.amount) || 0,
+          used: Number(weeklyBranchUsed?.[branchId]?.[productId]) || 0
+        })),
+        updateAt: now,
+        quotaGroupId
+      }))
+      .filter((d) => d.products.length > 0);
+
+    return { isWeeklyQuota: true, weeklyQuotaDocuments };
+  }
 
   // 1. معالجة الفروع (إذا تم اختيار الكل أو مصفوفة فارغة -> [] للكل)
   const isAllBranches =
@@ -131,6 +161,16 @@ const ConstraintFormModal = ({
   // إعدادات مخصصة لكل صنف
   const [itemConfigurations, setItemConfigurations] = useState({});
 
+  // منتجات الحصة الأسبوعية المشتركة: { [productId]: { amount } }
+  const [weeklySharedProducts, setWeeklySharedProducts] = useState({});
+  // الكميات المستخدمة لكل فرع/منتج في الحصة الأسبوعية: { [branchId]: { [productId]: used } }
+  const [weeklyBranchUsed, setWeeklyBranchUsed] = useState({});
+  // مستندات الحصة الأسبوعية الحالية عند التعديل (document منفصل لكل فرع)
+  const [weeklyQuotaExistingDocs, setWeeklyQuotaExistingDocs] = useState([]);
+  // معرف مجموعة الحصة الأسبوعية الحالية (يبقى ثابتاً بين مرات التعديل)
+  const [currentQuotaGroupId, setCurrentQuotaGroupId] = useState(null);
+
+
   useEffect(() => {
     if (editingConstraint) {
       setName(editingConstraint.name || editingConstraint.title || "");
@@ -179,10 +219,54 @@ const ConstraintFormModal = ({
         });
       }
       setItemConfigurations(initialConfigs);
+
+      if (editingConstraint.action === "weekly_quota") {
+        let groupDocs = editingConstraint._weeklyQuotaGroup || [editingConstraint];
+
+        // دعم الهيكل القديم (branchConfigurations في document واحد)
+        if (editingConstraint.branchConfigurations?.length) {
+          groupDocs = editingConstraint.branchConfigurations.map((bc) => ({
+            branchId: bc.branchId,
+            products: bc.products || [],
+            updateAt: bc.updateAt,
+            quotaGroupId: editingConstraint.quotaGroupId,
+            id: editingConstraint.id
+          }));
+        }
+
+        const branchIds = groupDocs.map((d) => d.branchId);
+        const sharedProducts = {};
+        const branchUsed = {};
+
+        groupDocs.forEach((d) => {
+          branchUsed[d.branchId] = {};
+          (d.products || []).forEach((p) => {
+            branchUsed[d.branchId][p.productId] = p.used ?? 0;
+          });
+        });
+
+        if (groupDocs.length > 0) {
+          (groupDocs[0].products || []).forEach((p) => {
+            sharedProducts[p.productId] = { amount: p.amount ?? "" };
+          });
+        }
+
+        setSelectedBranchIds(branchIds);
+        setWeeklySharedProducts(sharedProducts);
+        setWeeklyBranchUsed(branchUsed);
+        setWeeklyQuotaExistingDocs(groupDocs.filter((d) => d.id && d.branchId));
+        setCurrentQuotaGroupId(editingConstraint.quotaGroupId || groupDocs[0]?.quotaGroupId || null);
+      } else {
+        setWeeklySharedProducts({});
+        setWeeklyBranchUsed({});
+        setWeeklyQuotaExistingDocs([]);
+        setCurrentQuotaGroupId(null);
+      }
     } else {
       resetForm();
     }
   }, [editingConstraint, isOpen]);
+
 
   // عند تغيير نوع الإجراء إلى default_value -> تحديد المنتج الأول فقط كخيار آمن
   useEffect(() => {
@@ -213,6 +297,8 @@ const ConstraintFormModal = ({
     }
     setGlobalLockColumns(["transfer", "staffMeal"]);
     setItemConfigurations({});
+    setWeeklySharedProducts({});
+    setWeeklyBranchUsed({});
   };
 
   if (!isOpen) return null;
@@ -348,11 +434,44 @@ const handleDefaultValueChange = (itemId, field, value) => {
     }));
   };
 
+  const handleWeeklyProductToggle = (productId) => {
+    setWeeklySharedProducts((prev) => {
+      const newProducts = { ...prev };
+      if (newProducts[productId]) {
+        delete newProducts[productId];
+      } else {
+        newProducts[productId] = { amount: "" };
+      }
+      return newProducts;
+    });
+  };
+
+  const handleWeeklyAmountChange = (productId, amount) => {
+    setWeeklySharedProducts((prev) => ({
+      ...prev,
+      [productId]: { ...(prev[productId] || {}), amount }
+    }));
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!name.trim()) {
       alert("يرجى إدخال تسمية القيد");
       return;
+    }
+
+    if (action === "weekly_quota") {
+      if (selectedBranchIds.length === 0) {
+        alert("يرجى اختيار فرع واحد على الأقل للحصة الأسبوعية");
+        return;
+      }
+      const hasValidProducts = Object.values(weeklySharedProducts).some(
+        (p) => p.amount !== "" && p.amount !== undefined
+      );
+      if (!hasValidProducts) {
+        alert("يرجى اختيار منتج واحد على الأقل مع تحديد الكمية");
+        return;
+      }
     }
 
     const cleanedPayload = cleanConstraintPayload(
@@ -363,20 +482,32 @@ const handleDefaultValueChange = (itemId, field, value) => {
         selectedBranchIds,
         selectedItemIds,
         globalLockColumns,
-        itemConfigurations
+        itemConfigurations,
+        weeklySharedProducts,
+        weeklyBranchUsed
       },
       branches,
       items
     );
 
     try {
-      if (editingConstraint?.id) {
-        await updateConstraint(editingConstraint.id, cleanedPayload);
+      if (action === "weekly_quota" && cleanedPayload.isWeeklyQuota && cleanedPayload.weeklyQuotaDocuments) {
+        // الحصة الأسبوعية: أنشئ وثيقة منفصلة (addConstraint) لكل فرع
+        for (const doc of cleanedPayload.weeklyQuotaDocuments) {
+          await addConstraint({
+            ...doc,
+            createdAt: new Date().toISOString()
+          });
+        }
       } else {
-        await addConstraint({
-          ...cleanedPayload,
-          createdAt: new Date().toISOString()
-        });
+        if (editingConstraint?.id) {
+          await updateConstraint(editingConstraint.id, cleanedPayload);
+        } else {
+          await addConstraint({
+            ...cleanedPayload,
+            createdAt: new Date().toISOString()
+          });
+        }
       }
       onClose();
     } catch (err) {
@@ -423,6 +554,7 @@ const handleDefaultValueChange = (itemId, field, value) => {
               <option value="lock">🔒 قفل (Lock)</option>
               <option value="default_value">📌 قيمة افتراضية (Default Value)</option>
               <option value="max_value">⚡ الحد الأقصى للقيمة (Max Value)</option>
+              <option value="weekly_quota">📅 الحصة الأسبوعية (Weekly Quota)</option>
             </select>
           </div>
 
@@ -469,6 +601,12 @@ const handleDefaultValueChange = (itemId, field, value) => {
                 <span style={noteStyle}>🌐 مفعل لجميع التواريخ (dates: [])</span>
               )}
             </div>
+          ) : action === "weekly_quota" ? (
+            <div style={{ backgroundColor: "#fef3c7", padding: "8px 12px", borderRadius: "6px", border: "1px dashed #fbbf24" }}>
+              <span style={{ fontSize: "0.85rem", color: "#92400e" }}>
+                📅 الحصة الأسبوعية: حدد الفروع ثم اختر المنتجات والكميات مرة واحدة — تُنسَخ تلقائياً لجميع الفروع المختارة.
+              </span>
+            </div>
           ) : (
             <div style={{ backgroundColor: "#f9fafb", padding: "8px 12px", borderRadius: "6px", border: "1px dashed #d1d5db" }}>
               <span style={{ fontSize: "0.85rem", color: "#6b7280" }}>
@@ -480,13 +618,15 @@ const handleDefaultValueChange = (itemId, field, value) => {
           {/* الفروع branchIds */}
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
-              <label style={labelStyle}>الفروع (Branches):</label>
+              <label style={labelStyle}>
+                {action === "weekly_quota" ? "الفروع (مطلوب): *" : "الفروع (Branches):"}
+              </label>
               <div style={{ display: "flex", gap: "6px" }}>
                 <button type="button" onClick={handleSelectAllBranches} style={smallButtonStyle}>
                   تحديد الكل ({branches.length})
                 </button>
                 <button type="button" onClick={handleDeselectAllBranches} style={{ ...smallButtonStyle, backgroundColor: "#fee2e2", color: "#991b1b" }}>
-                  إلغاء الكل ([])
+                  إلغاء الكل
                 </button>
               </div>
             </div>
@@ -510,12 +650,86 @@ const handleDefaultValueChange = (itemId, field, value) => {
                 <span style={{ fontSize: "0.85rem", color: "#6b7280" }}>لا توجد فروع مسجلة</span>
               )}
             </div>
-            {selectedBranchIds.length === 0 && (
-              <span style={noteStyle}>🌐 ينطبق على جميع الفروع (branchIds: [])</span>
+            {action === "weekly_quota" ? (
+              selectedBranchIds.length === 0 ? (
+                <span style={{ ...noteStyle, color: "#b45309" }}>⚠️ يجب اختيار فرع واحد على الأقل</span>
+              ) : (
+                <span style={{ ...noteStyle, color: "#92400e" }}>✅ {selectedBranchIds.length} فرع محدد — المنتجات والكميات تُطبَّق على جميع الفروع</span>
+              )
+            ) : (
+              selectedBranchIds.length === 0 && (
+                <span style={noteStyle}>🌐 ينطبق على جميع الفروع (branchIds: [])</span>
+              )
             )}
           </div>
 
+          {/* الحصة الأسبوعية: منتجات مشتركة لجميع الفروع */}
+          {action === "weekly_quota" && (
+            <div>
+              <label style={labelStyle}>المنتجات والكميات (مشتركة لجميع الفروع):</label>
+              {selectedBranchIds.length === 0 ? (
+                <div style={{ padding: "16px", backgroundColor: "#fffbeb", borderRadius: "6px", border: "1px dashed #fbbf24", color: "#92400e", fontSize: "0.85rem" }}>
+                  اختر فرعاً أولاً لتحديد المنتجات والكميات
+                </div>
+              ) : (
+                <>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginBottom: "10px" }}>
+                    {selectedBranchIds.map((branchId) => {
+                      const branch = branches.find((b) => (b.id || b._id) === branchId);
+                      return (
+                        <span
+                          key={branchId}
+                          style={{ ...badgeStyle, backgroundColor: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d" }}
+                        >
+                          🏢 {branch?.name || branch?.title || branchId}
+                        </span>
+                      );
+                    })}
+                  </div>
+                  <div style={{ ...scrollBoxStyle, maxHeight: "240px", backgroundColor: "#fffbeb", border: "1px solid #fcd34d" }}>
+                    {items.length > 0 ? (
+                      items.map((item) => {
+                        const productId = item.id || item._id;
+                        const isChecked = !!weeklySharedProducts[productId];
+                        const productConfig = weeklySharedProducts[productId] || {};
+
+                        return (
+                          <div key={productId} style={{ borderBottom: "1px solid #fef3c7", paddingBottom: "8px", marginBottom: "8px" }}>
+                            <label style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: "bold", cursor: "pointer" }}>
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => handleWeeklyProductToggle(productId)}
+                              />
+                              <span>{item.name || item.title || productId}</span>
+                            </label>
+                            {isChecked && (
+                              <div style={{ marginRight: "28px", marginTop: "6px", display: "flex", alignItems: "center", gap: "6px" }}>
+                                <span style={{ fontSize: "0.85rem", fontWeight: "bold", color: "#92400e" }}>الكمية المحددة:</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  placeholder="0"
+                                  value={productConfig.amount ?? ""}
+                                  onChange={(e) => handleWeeklyAmountChange(productId, e.target.value)}
+                                  style={{ width: "80px", padding: "4px 8px", border: "1px solid #fcd34d", borderRadius: "4px" }}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <span style={{ fontSize: "0.85rem", color: "#6b7280" }}>لا توجد منتجات</span>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
           {/* الأصناف والأعمدة */}
+          {action !== "weekly_quota" && (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
               <label style={labelStyle}>الأصناف (Items):</label>
@@ -673,6 +887,7 @@ const handleDefaultValueChange = (itemId, field, value) => {
               <span style={noteStyle}>🌐 ينطبق على جميع الأصناف (items: [])</span>
             )}
           </div>
+          )}
 
           {/* أزرار الإجراءات */}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "16px", borderTop: "1px solid #e5e7eb", paddingTop: "12px" }}>
@@ -735,9 +950,148 @@ export default function ColumnConstraintsManager({ branches = [], items = [] }) 
         return { bg: "#dbeafe", color: "#1d4ed8", label: "📌 default_value (قيمة افتراضية)" };
       case "max_value":
         return { bg: "#dcfce7", color: "#15803d", label: "⚡ max_value (حد أقصى)" };
+      case "weekly_quota":
+        return { bg: "#fef3c7", color: "#92400e", label: "📅 weekly_quota (حصة أسبوعية)" };
       default:
         return { bg: "#f3f4f6", color: "#374151", label: action };
     }
+  };
+
+  const getBranchName = (id) => {
+    const branch = branches.find((b) => (b.id || b._id) === id);
+    return branch?.name || branch?.title || id;
+  };
+
+  const getItemName = (id) => {
+    const item = items.find((i) => (i.id || i._id) === id);
+    return item?.name || item?.title || id;
+  };
+
+  const CONSTRAINT_CATEGORIES = [
+    { key: "lock", title: "🔒 قيود القفل", description: "قواعد قفل الأعمدة (transfer, staffMeal)", headerBg: "#fef2f2", borderColor: "#fecaca" },
+    { key: "default_value", title: "📌 القيم الافتراضية", description: "تعيين قيم افتراضية للأعمدة", headerBg: "#eff6ff", borderColor: "#bfdbfe" },
+    { key: "max_value", title: "⚡ الحد الأقصى للقيم", description: "تحديد أقصى قيمة مسموحة لكل عمود", headerBg: "#f0fdf4", borderColor: "#bbf7d0" },
+    { key: "weekly_quota", title: "📅 الحصة الأسبوعية", description: "تحديد حصة أسبوعية للمنتجات لكل فرع", headerBg: "#fffbeb", borderColor: "#fcd34d" }
+  ];
+
+  const groupedConstraints = CONSTRAINT_CATEGORIES.map((cat) => ({
+    ...cat,
+    items: constraints.filter((c) => c.action === cat.key)
+  }));
+
+  const renderConstraintDetails = (item) => {
+    if (item.action === "weekly_quota") {
+      const configs = item.branchConfigurations || [];
+      if (configs.length === 0) {
+        return <span style={{ color: "#92400e", fontSize: "0.85rem" }}>لا توجد إعدادات</span>;
+      }
+      return (
+        <div style={{ fontSize: "0.85rem", maxHeight: "140px", overflowY: "auto" }}>
+          {configs.map((bc, idx) => (
+            <div key={idx} style={{ marginBottom: "8px", backgroundColor: "#fffbeb", padding: "8px", borderRadius: "6px", border: "1px solid #fcd34d" }}>
+              <strong style={{ color: "#92400e" }}>🏢 {getBranchName(bc.branchId)}</strong>
+              {(bc.products || []).map((p, pIdx) => (
+                <div key={pIdx} style={{ marginTop: "4px", fontSize: "0.8rem", color: "#78716c" }}>
+                  • {getItemName(p.productId)} — الكمية: <strong>{p.amount}</strong>
+                  {p.used !== undefined && Number(p.used) > 0 && (
+                    <span> | المستخدم: {p.used}</span>
+                  )}
+                </div>
+              ))}
+              {bc.updateAt && (
+                <div style={{ fontSize: "0.7rem", color: "#a8a29e", marginTop: "4px" }}>
+                  آخر تحديث: {new Date(bc.updateAt).toLocaleDateString("ar-SA")}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    return item.items && item.items.length > 0 ? (
+      <div style={{ fontSize: "0.85rem", maxHeight: "110px", overflowY: "auto" }}>
+        {item.items.map((it, idx) => (
+          <div key={idx} style={{ marginBottom: "4px", backgroundColor: "#f8fafc", padding: "4px 8px", borderRadius: "4px" }}>
+            <strong>{getItemName(it.itemId)}</strong>
+            <pre style={{ margin: "2px 0", fontSize: "0.75rem", color: "#475569" }}>
+              {JSON.stringify(it.columns)}
+            </pre>
+          </div>
+        ))}
+      </div>
+    ) : (
+      <span style={{ color: "#2563eb", fontWeight: "bold", fontSize: "0.85rem" }}>🌐 جميع الأصناف []</span>
+    );
+  };
+
+  const renderConstraintRow = (item) => {
+    const badge = getActionBadge(item.action);
+    return (
+      <tr key={item.id} style={{ borderBottom: "1px solid #e2e8f0" }}>
+        <td style={tdStyle}>
+          <div style={{ fontWeight: "bold", fontSize: "1rem", color: "#0f172a", marginBottom: "4px" }}>
+            {item.name || item.title || "بدون عنوان"}
+          </div>
+          <span style={{ padding: "3px 8px", borderRadius: "4px", fontSize: "0.75rem", fontWeight: "bold", backgroundColor: badge.bg, color: badge.color }}>
+            {badge.label}
+          </span>
+        </td>
+
+        <td style={tdStyle}>
+          {item.action === "weekly_quota" ? (
+            <span style={{ color: "#92400e", fontSize: "0.85rem" }}>—</span>
+          ) : item.dates && item.dates.length > 0 ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+              {item.dates.map((d) => (
+                <span key={d} style={badgeStyle}>{d}</span>
+              ))}
+            </div>
+          ) : (
+            <span style={{ color: "#2563eb", fontWeight: "bold", fontSize: "0.85rem" }}>🌐 الكل []</span>
+          )}
+        </td>
+
+        <td style={tdStyle}>
+          {item.action === "weekly_quota" ? (
+            <div style={{ fontSize: "0.85rem" }}>
+              {(item.branchConfigurations || []).map((bc) => (
+                <span key={bc.branchId} style={{ ...badgeStyle, backgroundColor: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", marginLeft: "4px" }}>
+                  {getBranchName(bc.branchId)}
+                </span>
+              ))}
+            </div>
+          ) : item.branchIds && item.branchIds.length > 0 ? (
+            <span style={{ fontSize: "0.85rem" }}>
+              {item.branchIds.map(getBranchName).join("، ")}
+            </span>
+          ) : (
+            <span style={{ color: "#2563eb", fontWeight: "bold", fontSize: "0.85rem" }}>🌐 جميع الفروع []</span>
+          )}
+        </td>
+
+        <td style={tdStyle}>
+          {renderConstraintDetails(item)}
+        </td>
+
+        <td style={tdStyle}>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button
+              onClick={() => handleEdit(item)}
+              style={{ backgroundColor: "#f59e0b", color: "#fff", border: "none", padding: "6px 12px", borderRadius: "6px", cursor: "pointer", fontSize: "0.85rem", fontWeight: "bold" }}
+            >
+              تعديل
+            </button>
+            <button
+              onClick={() => handleDelete(item.id)}
+              style={{ backgroundColor: "#ef4444", color: "#fff", border: "none", padding: "6px 12px", borderRadius: "6px", cursor: "pointer", fontSize: "0.85rem", fontWeight: "bold" }}
+            >
+              حذف
+            </button>
+          </div>
+        </td>
+      </tr>
+    );
   };
 
   return (
@@ -749,7 +1103,7 @@ export default function ColumnConstraintsManager({ branches = [], items = [] }) 
             📊 لوحة تحكم قيود الهياكل (Inventory & Branch Rules Dashboard)
           </h1>
           <p style={{ margin: "4px 0 0 0", fontSize: "0.875rem", color: "#64748b" }}>
-            إدارة مرنة ودقيقة لقواعد القفل، القيم الافتراضية، والحد الأقصى لكل منتج وفرع
+            إدارة مرنة ودقيقة لقواعد القفل، القيم الافتراضية، الحد الأقصى، والحصة الأسبوعية
           </p>
         </div>
 
@@ -771,104 +1125,76 @@ export default function ColumnConstraintsManager({ branches = [], items = [] }) 
         </button>
       </div>
 
-      {/* جدول العرض CRUD Grid */}
-      <div style={{ backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 1px 3px rgba(0,0,0,0.1)", overflow: "hidden" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "right" }}>
-          <thead>
-            <tr style={{ backgroundColor: "#f1f5f9", borderBottom: "2px solid #e2e8f0", color: "#334155", fontSize: "0.875rem" }}>
-              <th style={thStyle}>تسمية القيد والإجراء</th>
-              <th style={thStyle}>التواريخ (dates)</th>
-              <th style={thStyle}>الفروع (branchIds)</th>
-              <th style={thStyle}>الأصناف والأعمدة (items & columns)</th>
-              <th style={thStyle}>الإجراءات</th>
-            </tr>
-          </thead>
-          <tbody>
-            {constraints.map((item) => {
-              const badge = getActionBadge(item.action);
-              return (
-                <tr key={item.id} style={{ borderBottom: "1px solid #e2e8f0" }}>
-                  {/* العنوان والنوع */}
-                  <td style={tdStyle}>
-                    <div style={{ fontWeight: "bold", fontSize: "1rem", color: "#0f172a", marginBottom: "4px" }}>
-                      {item.name || item.title || "بدون عنوان"}
-                    </div>
-                    <span style={{ padding: "3px 8px", borderRadius: "4px", fontSize: "0.75rem", fontWeight: "bold", backgroundColor: badge.bg, color: badge.color }}>
-                      {badge.label}
-                    </span>
-                  </td>
+      {/* عرض القيود مقسمة حسب الفئات */}
+      {constraints.length === 0 ? (
+        <div style={{ backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 1px 3px rgba(0,0,0,0.1)", padding: "48px", textAlign: "center", color: "#64748b" }}>
+          لا توجد قيود مسجلة حالياً في اللوحة.
+        </div>
+      ) : (
+        groupedConstraints.map((category) => (
+          <div
+            key={category.key}
+            style={{
+              backgroundColor: "#fff",
+              borderRadius: "12px",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+              overflow: "hidden",
+              marginBottom: "20px",
+              border: `1px solid ${category.borderColor}`
+            }}
+          >
+            <div style={{
+              backgroundColor: category.headerBg,
+              padding: "16px 20px",
+              borderBottom: `2px solid ${category.borderColor}`,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center"
+            }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: "1.1rem", fontWeight: "bold", color: "#0f172a" }}>
+                  {category.title}
+                </h2>
+                <p style={{ margin: "4px 0 0 0", fontSize: "0.8rem", color: "#64748b" }}>
+                  {category.description}
+                </p>
+              </div>
+              <span style={{
+                backgroundColor: "#fff",
+                padding: "4px 12px",
+                borderRadius: "20px",
+                fontSize: "0.85rem",
+                fontWeight: "bold",
+                color: "#475569",
+                border: `1px solid ${category.borderColor}`
+              }}>
+                {category.items.length} قيد
+              </span>
+            </div>
 
-                  {/* التواريخ */}
-                  <td style={tdStyle}>
-                    {item.dates && item.dates.length > 0 ? (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
-                        {item.dates.map((d) => (
-                          <span key={d} style={badgeStyle}>{d}</span>
-                        ))}
-                      </div>
-                    ) : (
-                      <span style={{ color: "#2563eb", fontWeight: "bold", fontSize: "0.85rem" }}>🌐 الكل []</span>
-                    )}
-                  </td>
-
-                  {/* الفروع */}
-                  <td style={tdStyle}>
-                    {item.branchIds && item.branchIds.length > 0 ? (
-                      <span style={{ fontSize: "0.85rem" }}>{item.branchIds.join(", ")}</span>
-                    ) : (
-                      <span style={{ color: "#2563eb", fontWeight: "bold", fontSize: "0.85rem" }}>🌐 جميع الفروع []</span>
-                    )}
-                  </td>
-
-                  {/* الأصناف والأعمدة */}
-                  <td style={tdStyle}>
-                    {item.items && item.items.length > 0 ? (
-                      <div style={{ fontSize: "0.85rem", maxHeight: "110px", overflowY: "auto" }}>
-                        {item.items.map((it, idx) => (
-                          <div key={idx} style={{ marginBottom: "4px", backgroundColor: "#f8fafc", padding: "4px 8px", borderRadius: "4px" }}>
-                            <strong>الصنف: {it.itemId}</strong>
-                            <pre style={{ margin: "2px 0", fontSize: "0.75rem", color: "#475569" }}>
-                              {JSON.stringify(it.columns)}
-                            </pre>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <span style={{ color: "#2563eb", fontWeight: "bold", fontSize: "0.85rem" }}>🌐 جميع الأصناف []</span>
-                    )}
-                  </td>
-
-                  {/* زر التعديل والحذف */}
-                  <td style={tdStyle}>
-                    <div style={{ display: "flex", gap: "8px" }}>
-                      <button
-                        onClick={() => handleEdit(item)}
-                        style={{ backgroundColor: "#f59e0b", color: "#fff", border: "none", padding: "6px 12px", borderRadius: "6px", cursor: "pointer", fontSize: "0.85rem", fontWeight: "bold" }}
-                      >
-                        تعديل
-                      </button>
-                      <button
-                        onClick={() => handleDelete(item.id)}
-                        style={{ backgroundColor: "#ef4444", color: "#fff", border: "none", padding: "6px 12px", borderRadius: "6px", cursor: "pointer", fontSize: "0.85rem", fontWeight: "bold" }}
-                      >
-                        حذف
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-
-            {constraints.length === 0 && (
-              <tr>
-                <td colSpan="5" style={{ textAlign: "center", padding: "32px", color: "#64748b" }}>
-                  لا توجد قيود مسجلة حالياً في اللوحة.
-                </td>
-              </tr>
+            {category.items.length === 0 ? (
+              <div style={{ padding: "24px", textAlign: "center", color: "#94a3b8", fontSize: "0.9rem" }}>
+                لا توجد قيود في هذه الفئة
+              </div>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "right" }}>
+                <thead>
+                  <tr style={{ backgroundColor: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#334155", fontSize: "0.875rem" }}>
+                    <th style={thStyle}>تسمية القيد</th>
+                    <th style={thStyle}>التواريخ</th>
+                    <th style={thStyle}>الفروع</th>
+                    <th style={thStyle}>{category.key === "weekly_quota" ? "المنتجات والكميات" : "الأصناف والأعمدة"}</th>
+                    <th style={thStyle}>الإجراءات</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {category.items.map(renderConstraintRow)}
+                </tbody>
+              </table>
             )}
-          </tbody>
-        </table>
-      </div>
+          </div>
+        ))
+      )}
 
       {/* النافذة المنبثقة للنموذج */}
       <ConstraintFormModal
