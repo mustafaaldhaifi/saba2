@@ -714,7 +714,25 @@ const handleDefaultValueChange = (itemId, field, value) => {
                                   onChange={(e) => handleWeeklyAmountChange(productId, e.target.value)}
                                   style={{ width: "80px", padding: "4px 8px", border: "1px solid #fcd34d", borderRadius: "4px" }}
                                 />
+
+                                                                <span style={{ fontSize: "0.85rem", fontWeight: "bold", color: "#92400e" }}>الكمية المستخدمة:</span>
+                                                                <span style={{ fontSize: "0.85rem", fontWeight: "bold", color: "#92400e" }}>
+                                                                  {
+                                                                    weeklyBranchUsed &&
+                                                                    Array.isArray(selectedBranchIds) &&
+                                                                    selectedBranchIds.length > 0
+                                                                      ? selectedBranchIds.reduce((sum, branchId) => {
+                                                                          const branchUsed = weeklyBranchUsed[branchId]?.[productId];
+                                                                          return sum + (Number(branchUsed) || 0);
+                                                                        }, 0)
+                                                                      : 0
+                                                                  }
+                                                                </span>
+                                                           
+
+
                               </div>
+                              
                             )}
                           </div>
                         );
@@ -921,6 +939,8 @@ export default function ColumnConstraintsManager({ branches = [], items = [] }) 
 
   useEffect(() => {
     const unsubscribe = subscribeToConstraints((data) => {
+      console.log("ddd",data);
+      
       setConstraints(data || []);
     });
     return () => unsubscribe();
