@@ -15,7 +15,7 @@ import {
  * تقوم بتنظيف وتنسيق الكائن قبل إرساله لقواعد البيانات
  */
 export const cleanConstraintPayload = (rawForm, allBranches = [], allItems = []) => {
-  const { name, action, dates, selectedBranchIds, selectedItemIds, globalLockColumns, itemConfigurations, weeklySharedProducts, weeklyBranchUsed } = rawForm;
+  const { name, selectedCity,action, dates, selectedBranchIds, selectedItemIds, globalLockColumns, itemConfigurations, weeklySharedProducts, weeklyBranchUsed } = rawForm;
 
   // الحصة الأسبوعية: document منفصل لكل فرع (هيكل a.json)
   if (action === "weekly_quota") {
@@ -28,6 +28,7 @@ export const cleanConstraintPayload = (rawForm, allBranches = [], allItems = [])
     const weeklyQuotaDocuments = selectedBranchIds
       .map((branchId) => ({
         name: name?.trim() || "قيد بدون عنوان",
+        selectedCity:selectedCity,
         action: "weekly_quota",
         branchId,
         products: sharedEntries.map(([productId, v]) => ({
@@ -130,6 +131,7 @@ export const cleanConstraintPayload = (rawForm, allBranches = [], allItems = [])
 
   return {
     name: name?.trim() || "قيد بدون عنوان",
+    selectedCity,
     action,
     dates: cleanedDates,
     branchIds: cleanedBranchIds,
@@ -145,9 +147,12 @@ const ConstraintFormModal = ({
   isOpen,
   onClose,
   editingConstraint,
+  selectedCity,
   branches = [],
   items = []
 }) => {
+  const [city, setCity] = useState(selectedCity);
+  const [constraintBranches, setConstraintBranches] = useState([]);
   const [name, setName] = useState("");
   const [action, setAction] = useState("lock");
   const [dates, setDates] = useState([]);
@@ -321,10 +326,18 @@ const ConstraintFormModal = ({
 
   // --- التحكم بالفروع ---
   const handleSelectAllBranches = () => {
-    const allIds = branches.map((b) => b.id || b._id);
+    const allIds = constraintBranches.map((b) => b.id || b._id);
     setSelectedBranchIds(allIds);
   };
 
+ const handleSelectAllBranchesInsideOrOutsideRyad = (selectedCity) => {
+  setCity(selectedCity)
+    setSelectedBranchIds([]);
+  // افترض أن اسم الخاصية التي تخزن اسم المدينة في الفرع هو city أو cityName
+  setConstraintBranches(
+    branches.filter((branch) => branch.city === selectedCity)
+  );
+};
   const handleDeselectAllBranches = () => {
     setSelectedBranchIds([]);
   };
@@ -445,12 +458,18 @@ const handleDefaultValueChange = (itemId, field, value) => {
       return newProducts;
     });
   };
+  const getBranchName = (id) => {
+    const branch = branches.find((b) => (b.id || b._id) === id);
+    return branch?.name || branch?.title || id;
+  };
 
   const handleWeeklyAmountChange = (productId, amount) => {
+
     setWeeklySharedProducts((prev) => ({
       ...prev,
       [productId]: { ...(prev[productId] || {}), amount }
     }));
+
   };
 
   const handleSubmit = async (e) => {
@@ -473,10 +492,13 @@ const handleDefaultValueChange = (itemId, field, value) => {
         return;
       }
     }
+    console.log('selectedCity',selectedCity);
+    
 
     const cleanedPayload = cleanConstraintPayload(
       {
         name,
+        selectedCity,
         action,
         dates,
         selectedBranchIds,
@@ -489,27 +511,72 @@ const handleDefaultValueChange = (itemId, field, value) => {
       branches,
       items
     );
+     console.log('cleanedPayload',cleanedPayload);
 
     try {
-      if (action === "weekly_quota" && cleanedPayload.isWeeklyQuota && cleanedPayload.weeklyQuotaDocuments) {
-        // الحصة الأسبوعية: أنشئ وثيقة منفصلة (addConstraint) لكل فرع
-        for (const doc of cleanedPayload.weeklyQuotaDocuments) {
-          await addConstraint({
-            ...doc,
-            createdAt: new Date().toISOString()
-          });
-        }
-      } else {
-        if (editingConstraint?.id) {
-          await updateConstraint(editingConstraint.id, cleanedPayload);
-        } else {
-          await addConstraint({
-            ...cleanedPayload,
-            createdAt: new Date().toISOString()
-          });
-        }
-      }
-      onClose();
+      // 1. التحقق أولاً من التعديل
+if (editingConstraint?.id) {
+
+  if (action === "weekly_quota" && cleanedPayload.isWeeklyQuota && cleanedPayload.weeklyQuotaDocuments) {
+    // إنشاء وثيقة منفصلة لكل فرع في الحصة الأسبوعية
+    for (const doc of cleanedPayload.weeklyQuotaDocuments) {
+      console.log("doc",doc);
+      
+      await updateConstraint(editingConstraint.id, doc);
+      // await addConstraint({
+      //   ...doc,
+      //   createdAt: new Date().toISOString()
+      // });
+    }
+  }else{
+    await updateConstraint(editingConstraint.id, cleanedPayload);
+  }
+
+  // // حالة التعديل
+  // console.log('editingConstraint',editingConstraint);
+
+  
+  // console.log('cleanedPayload',cleanedPayload);
+  
+} else {
+  // 2. حالة الإضافة الجديدة
+  if (action === "weekly_quota" && cleanedPayload.isWeeklyQuota && cleanedPayload.weeklyQuotaDocuments) {
+    // إنشاء وثيقة منفصلة لكل فرع في الحصة الأسبوعية
+    for (const doc of cleanedPayload.weeklyQuotaDocuments) {
+      await addConstraint({
+        ...doc,
+        createdAt: new Date().toISOString()
+      });
+    }
+  } else {
+    // إنشاء قيد عادي جديد
+    await addConstraint({
+      ...cleanedPayload,
+      createdAt: new Date().toISOString()
+    });
+  }
+}
+
+onClose();
+      // if (action === "weekly_quota" && cleanedPayload.isWeeklyQuota && cleanedPayload.weeklyQuotaDocuments) {
+      //   // الحصة الأسبوعية: أنشئ وثيقة منفصلة (addConstraint) لكل فرع
+      //   for (const doc of cleanedPayload.weeklyQuotaDocuments) {
+      //     await addConstraint({
+      //       ...doc,
+      //       createdAt: new Date().toISOString()
+      //     });
+      //   }
+      // } else {
+      //   if (editingConstraint?.id) {
+      //     await updateConstraint(editingConstraint.id, cleanedPayload);
+      //   } else {
+      //     await addConstraint({
+      //       ...cleanedPayload,
+      //       createdAt: new Date().toISOString()
+      //     });
+      //   }
+      // }
+      // onClose();
     } catch (err) {
       console.error("Error saving constraint:", err);
       alert("حدث خطأ أثناء حفظ القيد");
@@ -616,41 +683,71 @@ const handleDefaultValueChange = (itemId, field, value) => {
           )}
 
           {/* الفروع branchIds */}
+    {!editingConstraint ? (
+  <>
+    {/* 1. صف العنوان والأزرار */}
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+      <label style={labelStyle}>
+        {action === "weekly_quota" ? "الفروع (مطلوب): *" : "الفروع (Branches):"}
+      </label>
+      <div style={{ display: "flex", gap: "6px" }}>
+        <button type="button" onClick={() => handleSelectAllBranchesInsideOrOutsideRyad('ryad')} style={smallButtonStyle}>
+          داخل الرياض
+        </button>
+        <button type="button" onClick={() => handleSelectAllBranchesInsideOrOutsideRyad('other')} style={smallButtonStyle}>
+          خارج الرياض
+        </button>
+        <button type="button" onClick={handleSelectAllBranches} style={smallButtonStyle}>
+          تحديد الكل ({branches.length})
+        </button>
+        <button type="button" onClick={handleDeselectAllBranches} style={{ ...smallButtonStyle, backgroundColor: "#fee2e2", color: "#991b1b" }}>
+          إلغاء الكل
+        </button>
+      </div>
+    </div>
+
+    {/* 2. صندوق قائمة الفروع */}
+    <div style={scrollBoxStyle}>
+      {constraintBranches.length > 0 ? (
+        constraintBranches.map((b) => {
+          const bId = b.id || b._id;
+          const isChecked = selectedBranchIds.includes(bId);
+          return (
+            <label key={bId} style={checkboxLabelStyle}>
+              <input
+                type="checkbox"
+                checked={isChecked}
+                onChange={() => handleBranchToggle(bId)}
+              />
+              <span>{b.name || b.title || bId}</span>
+            </label>
+          );
+        })
+      ) : (
+        <span style={{ fontSize: "0.85rem", color: "#6b7280" }}>لا توجد فروع مسجلة</span>
+      )}
+    </div>
+  </>
+) : (
+  /* 3. حالة التعديل (تم إزالة الأقواس المعقوفة الخاطئة) */
+  editingConstraint.action === "weekly_quota" ? (
+    <div style={{ fontSize: "0.85rem" }}>
+      {getBranchName(editingConstraint.branchId)}
+    </div>
+  ) : editingConstraint.branchIds && editingConstraint.branchIds.length > 0 ? (
+    <span style={{ fontSize: "0.85rem" }}>
+      {editingConstraint.branchIds.map(getBranchName).join("، ")}
+    </span>
+  ) : (
+    <span style={{ color: "#2563eb", fontWeight: "bold", fontSize: "0.85rem" }}>
+      🌐 جميع الفروع
+    </span>
+  )
+)}
           <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
-              <label style={labelStyle}>
-                {action === "weekly_quota" ? "الفروع (مطلوب): *" : "الفروع (Branches):"}
-              </label>
-              <div style={{ display: "flex", gap: "6px" }}>
-                <button type="button" onClick={handleSelectAllBranches} style={smallButtonStyle}>
-                  تحديد الكل ({branches.length})
-                </button>
-                <button type="button" onClick={handleDeselectAllBranches} style={{ ...smallButtonStyle, backgroundColor: "#fee2e2", color: "#991b1b" }}>
-                  إلغاء الكل
-                </button>
-              </div>
-            </div>
-            <div style={scrollBoxStyle}>
-              {branches.length > 0 ? (
-                branches.map((b) => {
-                  const bId = b.id || b._id;
-                  const isChecked = selectedBranchIds.includes(bId);
-                  return (
-                    <label key={bId} style={checkboxLabelStyle}>
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={() => handleBranchToggle(bId)}
-                      />
-                      <span>{b.name || b.title || bId}</span>
-                    </label>
-                  );
-                })
-              ) : (
-                <span style={{ fontSize: "0.85rem", color: "#6b7280" }}>لا توجد فروع مسجلة</span>
-              )}
-            </div>
-            {action === "weekly_quota" ? (
+            
+           
+            {/* {action === "weekly_quota" ? (
               selectedBranchIds.length === 0 ? (
                 <span style={{ ...noteStyle, color: "#b45309" }}>⚠️ يجب اختيار فرع واحد على الأقل</span>
               ) : (
@@ -660,7 +757,7 @@ const handleDefaultValueChange = (itemId, field, value) => {
               selectedBranchIds.length === 0 && (
                 <span style={noteStyle}>🌐 ينطبق على جميع الفروع (branchIds: [])</span>
               )
-            )}
+            )} */}
           </div>
 
           {/* الحصة الأسبوعية: منتجات مشتركة لجميع الفروع */}
@@ -687,7 +784,7 @@ const handleDefaultValueChange = (itemId, field, value) => {
                     })}
                   </div>
                   <div style={{ ...scrollBoxStyle, maxHeight: "240px", backgroundColor: "#fffbeb", border: "1px solid #fcd34d" }}>
-                    {items.length > 0 ? (
+                    {items.length > 0 && selectedCity === city ? (
                       items.map((item) => {
                         const productId = item.id || item._id;
                         const isChecked = !!weeklySharedProducts[productId];
@@ -791,7 +888,7 @@ const handleDefaultValueChange = (itemId, field, value) => {
 
             {/* قائمة الأصناف وتخصيص كل صنف */}
             <div style={{ ...scrollBoxStyle, maxHeight: "240px" }}>
-              {items.length > 0 ? (
+              {items.length > 0  && selectedCity === city  ? (
                 items.map((item) => {
                   const itemId = item.id || item._id;
                   const isChecked = selectedItemIds.includes(itemId);
@@ -932,14 +1029,18 @@ const handleDefaultValueChange = (itemId, field, value) => {
 // ----------------------------------------------------------------------
 // 🖥️ المكون الرئيسي: لوحة التحكم للقيود (Dashboard & CRUD Grid)
 // ----------------------------------------------------------------------
-export default function ColumnConstraintsManager({ branches = [], items = [] }) {
+export default function ColumnConstraintsManager({ branches = [], items = [] ,city }) {
+  // console.log("Selected City in Parent:", selectedCity);
   const [constraints, setConstraints] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingConstraint, setEditingConstraint] = useState(null);
 
   useEffect(() => {
+    
+    // setCity(city)
     const unsubscribe = subscribeToConstraints((data) => {
-      console.log("ddd",data);
+    console.log("Selected City in Parent:", city);
+      console.log(data);
       
       setConstraints(data || []);
     });
@@ -947,6 +1048,7 @@ export default function ColumnConstraintsManager({ branches = [], items = [] }) 
   }, []);
 
   const handleCreate = () => {
+
     setEditingConstraint(null);
     setIsModalOpen(true);
   };
@@ -1057,6 +1159,12 @@ export default function ColumnConstraintsManager({ branches = [], items = [] }) 
             {badge.label}
           </span>
         </td>
+         <td style={tdStyle}>
+          <div style={{ fontWeight: "bold", fontSize: "1rem", color: "#0f172a", marginBottom: "4px" }}>
+            {item.selectedCity || "لم يتم التعيين"}
+          </div>
+          
+        </td>
 
         <td style={tdStyle}>
           {item.action === "weekly_quota" ? (
@@ -1075,11 +1183,10 @@ export default function ColumnConstraintsManager({ branches = [], items = [] }) 
         <td style={tdStyle}>
           {item.action === "weekly_quota" ? (
             <div style={{ fontSize: "0.85rem" }}>
-              {(item.branchConfigurations || []).map((bc) => (
-                <span key={bc.branchId} style={{ ...badgeStyle, backgroundColor: "#fef3c7", color: "#92400e", border: "1px solid #fcd34d", marginLeft: "4px" }}>
-                  {getBranchName(bc.branchId)}
-                </span>
-              ))}
+              {
+              getBranchName(item.branchId)
+             
+              }
             </div>
           ) : item.branchIds && item.branchIds.length > 0 ? (
             <span style={{ fontSize: "0.85rem" }}>
@@ -1201,6 +1308,7 @@ export default function ColumnConstraintsManager({ branches = [], items = [] }) 
                 <thead>
                   <tr style={{ backgroundColor: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#334155", fontSize: "0.875rem" }}>
                     <th style={thStyle}>تسمية القيد</th>
+                    <th style={thStyle}>المدينة</th>
                     <th style={thStyle}>التواريخ</th>
                     <th style={thStyle}>الفروع</th>
                     <th style={thStyle}>{category.key === "weekly_quota" ? "المنتجات والكميات" : "الأصناف والأعمدة"}</th>
@@ -1219,6 +1327,7 @@ export default function ColumnConstraintsManager({ branches = [], items = [] }) 
       {/* النافذة المنبثقة للنموذج */}
       <ConstraintFormModal
         isOpen={isModalOpen}
+        selectedCity={city}
         onClose={() => setIsModalOpen(false)}
         editingConstraint={editingConstraint}
         branches={branches}

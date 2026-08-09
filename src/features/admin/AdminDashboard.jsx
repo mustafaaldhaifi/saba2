@@ -1176,7 +1176,7 @@ const AdminDashboard = () => {
                         </div>
                     </div>
 
-<ColumnConstraintsManager branches={branches} items={products} />
+<ColumnConstraintsManager branches={branches} items={products} city={selectedCity} />
                     {/* Products Action Bar */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
                         <h2 style={{ fontSize: '1.5rem', color: activeTab === 'reports' ? '#10b981' : 'hsl(var(--color-primary))', fontWeight: '700' }}>
