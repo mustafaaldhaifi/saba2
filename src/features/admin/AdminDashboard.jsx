@@ -641,99 +641,589 @@ const AdminDashboard = () => {
         }
     };
 
+    const updateProductSortOrders = async ({
+    isEditing,
+    editingProduct,
+    products,
+    targetCity,
+    selectedOrderType,
+    newOrder
+}) => {
+    // إذا كانت العملية إضافة منتج جديد
+    // نحتاج لتحريك المنتجات من نفس الترتيب وما بعده
+    if (!isEditing) {
+        const batch = writeBatch(db);
 
+        const affectedProducts = products.filter(product => {
+            const productOrder = Number(product.sortOrder) || 0;
 
-    const handleSave = async (e) => {
-        e.preventDefault();
+            return (
+                product.city === targetCity &&
+                product.typeId === selectedOrderType &&
+                productOrder >= newOrder
+            );
+        });
 
-        if (!selectedOrderType) {
-            showNotification('error', "الرجاء اختيار نوع الطلبية أولاً");
-            return;
+        // لا توجد منتجات تحتاج تحديث
+        if (affectedProducts.length === 0) {
+            return [...products];
         }
 
-        setIsSubmitting(true);
-        try {
-            // 1. Determine or Generate Link ID (Unique identifier across cities)
-            let linkId = formData.linkId;
-            if (!linkId) {
-                linkId = doc(collection(db, "products")).id;
-            }
+        let updatedProducts = [...products];
 
-            // Base Data
-            const baseData = {
-                name: formData.name,
-                unit: formData.unit,
-                unitF: formData.unitF,
-                typeId: selectedOrderType,
-                parentProduct: formData.parentProduct || null,
-                sortOrder: Number(formData.sortOrder) || 0,
-                isSales: formData.isSales || false,
-                deductions: formData.deductions ? formData.deductions.filter(d => d.productId && d.amount > 0) : [],
-                showOn: formData.showOn,
-                linkId: linkId, // Crucial: Always include the linkId
+        affectedProducts.forEach(product => {
+            const oldOrder = Number(product.sortOrder) || 0;
+            const newProductOrder = oldOrder + 1;
+
+            // تحديث Firestore فقط للمنتجات المتأثرة
+            batch.update(
+                doc(db, "products", product.id),
+                {
+                    sortOrder: newProductOrder,
+                    updatedAt: serverTimestamp()
+                }
+            );
+
+            // تحديث الواجهة
+            updatedProducts = updatedProducts.map(p =>
+                p.id === product.id
+                    ? {
+                        ...p,
+                        sortOrder: newProductOrder
+                    }
+                    : p
+            );
+        });
+
+        await batch.commit();
+
+        console.log(
+            `✅ تم تحديث ${affectedProducts.length} منتج بعد الترتيب ${newOrder}`
+        );
+
+        return updatedProducts;
+    }
+
+    // =====================================================
+    // تعديل منتج موجود
+    // =====================================================
+
+    const oldOrder =
+        Number(editingProduct.sortOrder) || 0;
+
+    // إذا لم يتغير الترتيب
+    // لا نعمل أي عملية على بقية المنتجات
+    if (oldOrder === newOrder) {
+        console.log(
+            "ℹ️ الترتيب لم يتغير، لا حاجة لتحديث بقية المنتجات"
+        );
+
+        return [...products];
+    }
+
+    const batch = writeBatch(db);
+
+    let affectedProducts = [];
+
+    // =====================================================
+    // المنتج تحرك للأعلى
+    //
+    // مثال:
+    // 15
+    // 16
+    // 17
+    // 18
+    // 19
+    // 20 ← المنتج
+    //
+    // أصبح 15
+    //
+    // فقط 15 - 19 تتحرك +1
+    // =====================================================
+
+    if (newOrder < oldOrder) {
+
+        affectedProducts = products.filter(product => {
+            const productOrder =
+                Number(product.sortOrder) || 0;
+
+            return (
+                product.city === targetCity &&
+                product.typeId === selectedOrderType &&
+                product.id !== editingProduct.id &&
+                productOrder >= newOrder &&
+                productOrder < oldOrder
+            );
+        });
+
+    }
+
+    // =====================================================
+    // المنتج تحرك للأسفل
+    //
+    // مثال:
+    // 20 ← المنتج
+    // 21
+    // 22
+    // 23
+    // 24
+    // 25
+    //
+    // أصبح 25
+    //
+    // فقط 21 - 25 تتحرك -1
+    // =====================================================
+
+    else {
+
+        affectedProducts = products.filter(product => {
+            const productOrder =
+                Number(product.sortOrder) || 0;
+
+            return (
+                product.city === targetCity &&
+                product.typeId === selectedOrderType &&
+                product.id !== editingProduct.id &&
+                productOrder > oldOrder &&
+                productOrder <= newOrder
+            );
+        });
+    }
+
+    // لا توجد منتجات متأثرة
+    if (affectedProducts.length === 0) {
+        console.log(
+            "ℹ️ لا توجد منتجات أخرى تحتاج تحديث"
+        );
+
+        return [...products];
+    }
+
+    // =====================================================
+    // تحديث Firestore + القائمة المحلية
+    // =====================================================
+
+    let updatedProducts = [...products];
+
+    affectedProducts.forEach(product => {
+
+        const currentOrder =
+            Number(product.sortOrder) || 0;
+
+        let updatedOrder;
+
+        if (newOrder < oldOrder) {
+            // تحريك للأعلى
+            updatedOrder = currentOrder + 1;
+        } else {
+            // تحريك للأسفل
+            updatedOrder = currentOrder - 1;
+        }
+
+        // تحديث Firestore
+        batch.update(
+            doc(db, "products", product.id),
+            {
+                sortOrder: updatedOrder,
                 updatedAt: serverTimestamp()
+            }
+        );
+
+        // تحديث الواجهة فقط لهذا المنتج
+        updatedProducts = updatedProducts.map(p =>
+            p.id === product.id
+                ? {
+                    ...p,
+                    sortOrder: updatedOrder
+                }
+                : p
+        );
+    });
+
+    // تنفيذ جميع التحديثات المتأثرة فقط
+    await batch.commit();
+
+    console.log(
+        `✅ تم تحديث ${affectedProducts.length} منتج فقط`
+    );
+
+    console.log(
+        `📌 الترتيب: ${oldOrder} → ${newOrder}`
+    );
+
+    return updatedProducts;
+};
+
+const handleSave = async (e) => {
+    e.preventDefault();
+
+    if (!selectedOrderType) {
+        showNotification(
+            'error',
+            "الرجاء اختيار نوع الطلبية أولاً"
+        );
+        return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+
+        // =====================================================
+        // 1. تحديد أو إنشاء Link ID
+        // =====================================================
+
+        let linkId = formData.linkId;
+
+        if (!linkId) {
+            linkId = doc(
+                collection(db, "products")
+            ).id;
+        }
+
+        // =====================================================
+        // 2. تحديد الترتيب الجديد
+        // =====================================================
+
+        const newOrder =
+            Number(formData.sortOrder) || 0;
+
+        // =====================================================
+        // 3. تحديد المدينة
+        // =====================================================
+
+        const targetCity = editingProduct
+            ? editingProduct.city
+            : selectedCity;
+
+        // =====================================================
+        // 4. Base Data
+        // =====================================================
+
+        const baseData = {
+            name: formData.name,
+            unit: formData.unit,
+            unitF: formData.unitF,
+
+            typeId: selectedOrderType,
+
+            parentProduct:
+                formData.parentProduct || null,
+
+            sortOrder: newOrder,
+
+            isSales:
+                formData.isSales || false,
+
+            deductions:
+                formData.deductions
+                    ? formData.deductions.filter(
+                        d =>
+                            d.productId &&
+                            d.amount > 0
+                    )
+                    : [],
+
+            showOn: formData.showOn,
+
+            linkId: linkId,
+
+            updatedAt: serverTimestamp()
+        };
+
+        // =====================================================
+        // 5. تحديد Document Reference
+        // =====================================================
+
+        let docRef = null;
+
+        if (editingProduct) {
+
+            docRef = doc(
+                db,
+                "products",
+                editingProduct.id
+            );
+        }
+
+        // =====================================================
+        // 6. تجهيز القائمة المحلية
+        // =====================================================
+
+        let newLocalList = [...products];
+
+        // =====================================================
+        // 7. تحديث ترتيب بقية المنتجات
+        // =====================================================
+
+        newLocalList =
+            await updateProductSortOrders({
+                isEditing: !!editingProduct,
+
+                editingProduct,
+
+                products,
+
+                targetCity,
+
+                selectedOrderType,
+
+                newOrder
+            });
+
+        // =====================================================
+        // 8. حفظ المنتج نفسه
+        // =====================================================
+
+        const payload = {
+            ...baseData,
+            city: targetCity
+        };
+
+        // =====================================================
+        // UPDATE
+        // =====================================================
+
+        if (docRef) {
+
+            await updateDoc(
+                docRef,
+                payload
+            );
+
+            // تحديث المنتج المعدل في القائمة المحلية
+            newLocalList =
+                newLocalList.map(product => {
+
+                    if (
+                        product.id === docRef.id
+                    ) {
+                        return {
+                            ...product,
+                            ...payload,
+                            id: docRef.id
+                        };
+                    }
+
+                    return product;
+                });
+        }
+
+        // =====================================================
+        // CREATE
+        // =====================================================
+
+        else {
+
+            const createPayload = {
+                ...payload,
+                createdAt: serverTimestamp()
             };
 
-            // Determine Target City
-            const targetCity = editingProduct ? editingProduct.city : selectedCity;
+            // إنشاء ID جديد
+            const newDocRef =
+                doc(collection(db, "products"));
 
-            let docRef = null;
+            await setDoc(
+                newDocRef,
+                createPayload
+            );
 
-            // 1. Determine Target Document Reference
-            if (editingProduct) {
-                // UPDATE: Use the exact document ID
-                docRef = doc(db, "products", editingProduct.id);
-            }
-            // If adding new, we leave docRef as null so it creates a new document.
-            // We NO LONGER search by name to avoid overwriting existing items when adding new ones.
+            // إضافة المنتج الجديد للقائمة المحلية
+            newLocalList.push({
+                id: newDocRef.id,
 
-            // 2. Payload Preparation
-            const payload = { ...baseData, city: targetCity };
-            let newLocalList = [...products];
+                ...payload,
 
-            // 3. Upsert (Update or Create)
-            if (docRef) {
-                // UPDATE
-                await updateDoc(docRef, payload);
-
-                if (targetCity === selectedCity) {
-                    newLocalList = newLocalList.map(p => p.id === docRef.id ? { ...p, ...payload, id: docRef.id } : p);
+                createdAt: {
+                    seconds:
+                        Date.now() / 1000
                 }
-            } else {
-                // CREATE
-                const createPayload = { ...payload, createdAt: serverTimestamp() };
-                const res = await addDoc(collection(db, "products"), createPayload);
+            });
+        }
 
-                if (targetCity === selectedCity) {
-                    newLocalList.push({
-                        id: res.id,
-                        ...payload,
-                        createdAt: { seconds: Date.now() / 1000 }
-                    });
-                }
-            }
+        // =====================================================
+        // 9. ترتيب القائمة المحلية
+        // =====================================================
 
-            await triggerUpdate(targetCity, selectedOrderType);
+        const sortedList =
+            [...newLocalList].sort(
+                (a, b) =>
+                    (Number(a.sortOrder) || 0) -
+                    (Number(b.sortOrder) || 0)
+            );
 
-            // Finalize Local State
-            const sortedList = newLocalList.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
-            setProducts(sortedList);
+        // =====================================================
+        // 10. تحديث React State
+        // =====================================================
 
-            const cacheKey = `products_${selectedCity}_${selectedOrderType}`;
-            localStorage.setItem(cacheKey, JSON.stringify({
+        setProducts(sortedList);
+
+        // =====================================================
+        // 11. تحديث LocalStorage
+        // =====================================================
+
+        const cacheKey =
+            `products_${selectedCity}_${selectedOrderType}`;
+
+        localStorage.setItem(
+            cacheKey,
+            JSON.stringify({
                 items: sortedList,
                 lastSync: Date.now()
-            }));
+            })
+        );
 
-            showNotification('success', editingProduct ? "تم تحديث المنتج والفروع المحددة" : "تم إضافة المنتج للفروع المحددة");
-            handleCloseModal();
-        } catch (error) {
-            console.error("Error saving product:", error);
-            showNotification('error', "حدث خطأ أثناء الحفظ");
-        } finally {
-            setIsSubmitting(false);
-        }
-    };
+        // =====================================================
+        // 12. تشغيل تحديث الفروع
+        // =====================================================
+
+        await triggerUpdate(
+            targetCity,
+            selectedOrderType
+        );
+
+        // =====================================================
+        // 13. رسالة النجاح
+        // =====================================================
+
+        showNotification(
+            'success',
+            editingProduct
+                ? "تم تحديث المنتج وترتيب المنتجات"
+                : "تم إضافة المنتج وترتيب المنتجات"
+        );
+
+        // إغلاق النافذة
+        handleCloseModal();
+
+    } catch (error) {
+
+        console.error(
+            "❌ Error saving product:",
+            error
+        );
+
+        showNotification(
+            'error',
+            "حدث خطأ أثناء الحفظ"
+        );
+
+    } finally {
+
+        setIsSubmitting(false);
+    }
+};
+
+//     const handleSave = async (e) => {
+//         e.preventDefault();
+
+//         if (!selectedOrderType) {
+//             showNotification('error', "الرجاء اختيار نوع الطلبية أولاً");
+//             return;
+//         }
+
+//         setIsSubmitting(true);
+//         try {
+//             // 1. Determine or Generate Link ID (Unique identifier across cities)
+//             let linkId = formData.linkId;
+//             if (!linkId) {
+//                 linkId = doc(collection(db, "products")).id;
+//             }
+
+//             // Base Data
+//             const baseData = {
+//                 name: formData.name,
+//                 unit: formData.unit,
+//                 unitF: formData.unitF,
+//                 typeId: selectedOrderType,
+//                 parentProduct: formData.parentProduct || null,
+//                 sortOrder: Number(formData.sortOrder) || 0,
+//                 isSales: formData.isSales || false,
+//                 deductions: formData.deductions ? formData.deductions.filter(d => d.productId && d.amount > 0) : [],
+//                 showOn: formData.showOn,
+//                 linkId: linkId, // Crucial: Always include the linkId
+//                 updatedAt: serverTimestamp()
+//             };
+
+//             // Determine Target City
+//             const targetCity = editingProduct ? editingProduct.city : selectedCity;
+
+//             let docRef = null;
+
+//             // 1. Determine Target Document Reference
+//             if (editingProduct) {
+//                 // UPDATE: Use the exact document ID
+//                 docRef = doc(db, "products", editingProduct.id);
+//             }
+
+//             await updateProductSortOrders({
+//     isEditing: !!editingProduct,
+//     editingProduct,
+//     products,
+//     targetCity,
+//     selectedOrderType,
+//     newOrder: Number(formData.sortOrder) || 0
+// });
+//             // If adding new, we leave docRef as null so it creates a new document.
+//             // We NO LONGER search by name to avoid overwriting existing items when adding new ones.
+
+//             // 2. Payload Preparation
+//             const payload = { ...baseData, city: targetCity };
+//             let newLocalList = [...products];
+
+// newLocalList = await updateProductSortOrders({
+//     isEditing: !!editingProduct,
+//     editingProduct,
+//     products,
+//     targetCity,
+//     selectedOrderType,
+//     newOrder: Number(formData.sortOrder) || 0
+// });
+
+//             // 3. Upsert (Update or Create)
+//             if (docRef) {
+//                 // UPDATE
+//                 await updateDoc(docRef, payload);
+
+//                 if (targetCity === selectedCity) {
+//                     newLocalList = newLocalList.map(p => p.id === docRef.id ? { ...p, ...payload, id: docRef.id } : p);
+//                 }
+//             } else {
+//                 // CREATE
+//                 const createPayload = { ...payload, createdAt: serverTimestamp() };
+//                 const res = await addDoc(collection(db, "products"), createPayload);
+
+//                 if (targetCity === selectedCity) {
+//                     newLocalList.push({
+//                         id: res.id,
+//                         ...payload,
+//                         createdAt: { seconds: Date.now() / 1000 }
+//                     });
+//                 }
+//             }
+
+//             await triggerUpdate(targetCity, selectedOrderType);
+
+//             // Finalize Local State
+//             const sortedList = newLocalList.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+//             setProducts(sortedList);
+
+//             const cacheKey = `products_${selectedCity}_${selectedOrderType}`;
+//             localStorage.setItem(cacheKey, JSON.stringify({
+//                 items: sortedList,
+//                 lastSync: Date.now()
+//             }));
+
+//             showNotification('success', editingProduct ? "تم تحديث المنتج والفروع المحددة" : "تم إضافة المنتج للفروع المحددة");
+//             handleCloseModal();
+//         } catch (error) {
+//             console.error("Error saving product:", error);
+//             showNotification('error', "حدث خطأ أثناء الحفظ");
+//         } finally {
+//             setIsSubmitting(false);
+//         }
+//     };
 
     const handleDelete = async (productId) => {
         if (!window.confirm("هل أنت متأكد من حذف هذا المنتج؟")) return;
