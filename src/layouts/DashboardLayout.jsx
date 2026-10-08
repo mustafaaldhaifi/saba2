@@ -80,6 +80,7 @@ const DashboardLayout = ({ children, title, role }) => {
     };
 
     const menuItems = role === 'admin' ? [
+        { label: 'الاستبيانات', path: '/admin/surveys', icon: '📝' },
         { label: 'الرئيسية', path: '/admin', icon: '🏠' },
         { label: 'إدارة المنتجات', path: '/admin?tab=products', icon: '📦' },
         { label: 'التقارير', path: '/admin?tab=reports', icon: '📊' },

@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import Login from '../features/auth/Login';
 import AdminDashboard from '../features/admin/AdminDashboard';
 import BranchDashboard from '../features/branch/BranchDashboard';
+import SurveysDashboard from '../features/surveys/SurveysDashboard';
 
 const AppRoutes = () => {
     return (
@@ -10,6 +11,7 @@ const AppRoutes = () => {
             <Routes>
                 <Route path="/login" element={<Login />} />
                 <Route path="/admin" element={<AdminDashboard />} />
+                <Route path="/admin/surveys" element={<SurveysDashboard />} />
                 <Route path="/branch" element={<BranchDashboard />} />
                 <Route path="/" element={<Navigate to="/login" replace />} />
             </Routes>

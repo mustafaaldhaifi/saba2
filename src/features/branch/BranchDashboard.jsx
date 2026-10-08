@@ -3,6 +3,7 @@ import DashboardLayout from '../../layouts/DashboardLayout';
 import { collection, query, where, getDocs, doc, getDoc } from "firebase/firestore";
 import { db, auth } from '../../config/firebase'; // Ensure path is correct
 import { onAuthStateChanged } from "firebase/auth";
+import BranchSurveyPanel from '../surveys/BranchSurveyPanel';
 
 const BranchDashboard = () => {
     const [selectedOrderType, setSelectedOrderType] = useState('');
@@ -186,6 +187,8 @@ const BranchDashboard = () => {
 
     return (
         <DashboardLayout title="نظرة عامة على الفرع" role="branch">
+
+            <BranchSurveyPanel branchId={branchData?.id} />
 
             {/* Order Type Selection Section */}
             <div className="card" style={{ marginBottom: '2rem', padding: '1.5rem' }}>
