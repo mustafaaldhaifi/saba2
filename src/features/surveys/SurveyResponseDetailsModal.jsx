@@ -4,6 +4,7 @@ import { QUESTION_TYPES, RESPONSE_STATUS, formatMonth } from './surveyConstants'
 import { correctSurveyResponse } from './surveyService';
 import { cleanSurveyAnswers, validateSurveyAnswers } from './surveyValidation';
 import HealthWorkersEditor from './HealthWorkersEditor';
+import { getResponseMonth, occurrenceDateOfResponse } from './surveySchedule';
 
 const SurveyResponseDetailsModal = ({ response, branch, survey, onClose, onUpdated }) => {
   const questions = response.surveySnapshot?.questions || survey.questions || [];
@@ -29,7 +30,7 @@ const SurveyResponseDetailsModal = ({ response, branch, survey, onClose, onUpdat
 
   return <div className="survey-modal-backdrop" role="presentation" onMouseDown={onClose}>
     <section className="survey-modal survey-response-details" role="dialog" aria-modal="true" aria-label="تفاصيل إجابة الاستبيان" onMouseDown={(event) => event.stopPropagation()}>
-      <div className="survey-modal-header"><div><h2>{response.surveySnapshot?.title || survey.title}</h2><p>{branch.name || branch.id} · {formatMonth(response.month)}</p></div><button type="button" className="survey-close" onClick={onClose}>×</button></div>
+      <div className="survey-modal-header"><div><h2>{response.surveySnapshot?.title || survey.title}</h2><p>{branch.name || branch.id} · {formatMonth(getResponseMonth(response))} · موعد {occurrenceDateOfResponse(response) || 'غير محدد'}</p></div><button type="button" className="survey-close" onClick={onClose}>×</button></div>
       <div className="survey-response-summary"><span className={`survey-response-state ${response.status}`}>{response.status === RESPONSE_STATUS.SUBMITTED ? 'تم الإرسال' : 'مسودة'}</span>{response.submittedAt?.seconds && <span>تاريخ الإرسال: {new Date(response.submittedAt.seconds * 1000).toLocaleString('ar-SA')}</span>}</div>
       <div className="survey-response-answers">{questions.map((question) => {
         const answer = answers[question.id] || {};

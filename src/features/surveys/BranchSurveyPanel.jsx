@@ -4,6 +4,7 @@ import { QUESTION_TYPES, RESPONSE_STATUS } from './surveyConstants';
 import { getSurveyResponse, getVisibleSurveysForBranch, saveSurveyResponse } from './surveyService';
 import HealthWorkersEditor from './HealthWorkersEditor';
 import { cleanSurveyAnswers, validateSurveyAnswers } from './surveyValidation';
+import { getScheduleForOccurrence } from './surveySchedule';
 import './survey.css';
 
 const answersFor = (survey, savedAnswers = {}) => Object.fromEntries(survey.questions.map((question) => [
@@ -40,7 +41,7 @@ const BranchSurveyPanel = ({ branchId }) => {
         setIsLoading(true);
         const visibleSurveys = await getVisibleSurveysForBranch(branchId);
         const withResponses = await Promise.all(visibleSurveys.map(async (survey) => {
-          const response = await getSurveyResponse({ surveyId: survey.id, branchId });
+          const response = await getSurveyResponse({ surveyId: survey.id, branchId, occurrenceDate: survey.occurrenceDate, allowLegacy: getScheduleForOccurrence(survey, survey.occurrenceDate).type === 'month_start' });
           return { ...survey, responseStatus: response?.status || null, savedAnswers: response?.answers || {} };
         }));
         if (isMounted) setSurveys(withResponses);
@@ -53,7 +54,8 @@ const BranchSurveyPanel = ({ branchId }) => {
     };
 
     loadSurveys();
-    return () => { isMounted = false; };
+    const refresh = window.setInterval(loadSurveys, 60_000);
+    return () => { isMounted = false; window.clearInterval(refresh); };
   }, [branchId]);
 
   const openSurvey = (survey) => {
@@ -97,7 +99,9 @@ const BranchSurveyPanel = ({ branchId }) => {
     }
   };
 
-  if (isLoading || surveys.length === 0) return null;
+  if (isLoading) return null;
+  if (error && surveys.length === 0) return <section className="survey-branch-card card"><p className="survey-error">{error}</p></section>;
+  if (surveys.length === 0) return null;
 
   return (
     <section className="survey-branch-card card">
@@ -111,7 +115,7 @@ const BranchSurveyPanel = ({ branchId }) => {
       {surveys.map((survey) => (
         <button type="button" className="survey-branch-item" key={survey.id} onClick={() => openSurvey(survey)}>
           <span>
-            <strong>{survey.title}</strong>
+            <strong>{survey.title} · {survey.occurrenceDate}</strong>
             {survey.description && <small>{survey.description}</small>}
           </span>
           <span className={`survey-response-state ${survey.responseStatus || 'pending'}`}>
