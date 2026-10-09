@@ -13,6 +13,7 @@ export const QUESTION_TYPES = {
   DOCUMENT: 'document',
   YES_NO: 'yes_no',
   NOTES: 'notes',
+  HEALTH_DOCUMENTS: 'health_documents',
 };
 
 export const getCurrentMonth = () => {

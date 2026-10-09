@@ -2,11 +2,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { auth } from '../../config/firebase';
 import { QUESTION_TYPES, RESPONSE_STATUS } from './surveyConstants';
 import { getSurveyResponse, getVisibleSurveysForBranch, saveSurveyResponse } from './surveyService';
+import HealthWorkersEditor from './HealthWorkersEditor';
+import { cleanSurveyAnswers, validateSurveyAnswers } from './surveyValidation';
 import './survey.css';
 
 const answersFor = (survey, savedAnswers = {}) => Object.fromEntries(survey.questions.map((question) => [
   question.id,
-  savedAnswers[question.id] || (question.type === QUESTION_TYPES.YES_NO
+  savedAnswers[question.id] || (question.type === QUESTION_TYPES.HEALTH_DOCUMENTS
+    ? { workers: [] }
+    : question.type === QUESTION_TYPES.YES_NO
     ? { value: '', reason: '' }
     : question.type === QUESTION_TYPES.DOCUMENT
       ? { documentNumber: '', expiryDate: '' }
@@ -64,18 +68,11 @@ const BranchSurveyPanel = ({ branchId }) => {
   };
 
   const validate = () => {
-    for (const question of selectedSurvey.questions) {
-      const answer = answers[question.id] || {};
-      if (!question.required) continue;
-      if (question.type === QUESTION_TYPES.DOCUMENT && (!answer.documentNumber?.trim() || !answer.expiryDate)) return `أكمل بيانات: ${question.label}`;
-      if (question.type === QUESTION_TYPES.YES_NO && !answer.value) return `اختر إجابة: ${question.label}`;
-      if (question.type === QUESTION_TYPES.YES_NO && answer.value === 'no' && question.reasonRequiredWhen === 'no' && !answer.reason?.trim()) return `أدخل سبب عدم التصحيح: ${question.label}`;
-      if (question.type === QUESTION_TYPES.NOTES && !answer.value?.trim()) return `أدخل: ${question.label}`;
-    }
-    return null;
+    return validateSurveyAnswers(selectedSurvey.questions, cleanSurveyAnswers(selectedSurvey.questions, answers));
   };
 
   const save = async (status) => {
+    if (responseStatus === RESPONSE_STATUS.SUBMITTED) return;
     if (status === RESPONSE_STATUS.SUBMITTED) {
       const validationError = validate();
       if (validationError) {
@@ -93,7 +90,7 @@ const BranchSurveyPanel = ({ branchId }) => {
         ? { ...survey, responseStatus: status, savedAnswers: answers }
         : survey));
     } catch (saveError) {
-      setError('تعذر حفظ الإجابة. حاول مرة أخرى.');
+      setError(saveError.message || 'تعذر حفظ الإجابة. حاول مرة أخرى.');
       console.error('Unable to save survey response:', saveError);
     } finally {
       setIsSaving(false);
@@ -130,7 +127,7 @@ const BranchSurveyPanel = ({ branchId }) => {
               <div><h2>{selectedSurvey.title}</h2><p>{selectedSurvey.description}</p></div>
               <button type="button" className="survey-close" onClick={() => setSelectedSurvey(null)}>×</button>
             </div>
-            {selectedSurvey.questions.map((question) => {
+            <fieldset className="survey-answer-fieldset" disabled={responseStatus === RESPONSE_STATUS.SUBMITTED || isSaving}>{selectedSurvey.questions.map((question) => {
               const answer = answers[question.id] || {};
               return (
                 <div className="survey-question" key={question.id}>
@@ -138,12 +135,13 @@ const BranchSurveyPanel = ({ branchId }) => {
                   {question.type === QUESTION_TYPES.DOCUMENT && <div className="survey-document-fields"><input className="input-field" placeholder="رقم الوثيقة" value={answer.documentNumber || ''} onChange={(event) => updateAnswer(question.id, { documentNumber: event.target.value })} /><input className="input-field" type="date" value={answer.expiryDate || ''} onChange={(event) => updateAnswer(question.id, { expiryDate: event.target.value })} /></div>}
                   {question.type === QUESTION_TYPES.YES_NO && <><div className="survey-choice-group"><button type="button" className={answer.value === 'yes' ? 'selected yes' : ''} onClick={() => updateAnswer(question.id, { value: 'yes', reason: '' })}>نعم</button><button type="button" className={answer.value === 'no' ? 'selected no' : ''} onClick={() => updateAnswer(question.id, { value: 'no' })}>لا</button></div>{answer.value === 'no' && question.reasonRequiredWhen === 'no' && <textarea className="input-field" placeholder="سبب عدم التصحيح" value={answer.reason || ''} onChange={(event) => updateAnswer(question.id, { reason: event.target.value })} />}</>}
                   {question.type === QUESTION_TYPES.NOTES && <textarea className="input-field" rows="4" value={answer.value || ''} onChange={(event) => updateAnswer(question.id, { value: event.target.value })} />}
+                  {question.type === QUESTION_TYPES.HEALTH_DOCUMENTS && <HealthWorkersEditor workers={answer.workers || []} onChange={(workers) => updateAnswer(question.id, { workers })} disabled={isSaving} />}
                 </div>
               );
-            })}
+            })}</fieldset>
             {error && <p className="survey-error">{error}</p>}
             {responseStatus === RESPONSE_STATUS.SUBMITTED && <p className="survey-success">تم إرسال إجابتك لهذا الشهر.</p>}
-            <div className="survey-actions"><button type="button" className="btn survey-secondary" onClick={() => save(RESPONSE_STATUS.DRAFT)} disabled={isSaving}>حفظ مسودة</button><button type="button" className="btn btn-primary" onClick={() => save(RESPONSE_STATUS.SUBMITTED)} disabled={isSaving}>{isSaving ? 'جاري الحفظ...' : 'إرسال الاستبيان'}</button></div>
+            {responseStatus !== RESPONSE_STATUS.SUBMITTED && <div className="survey-actions"><button type="button" className="btn survey-secondary" onClick={() => save(RESPONSE_STATUS.DRAFT)} disabled={isSaving}>حفظ مسودة</button><button type="button" className="btn btn-primary" onClick={() => save(RESPONSE_STATUS.SUBMITTED)} disabled={isSaving}>{isSaving ? 'جاري الحفظ...' : 'إرسال الاستبيان'}</button></div>}
           </div>
         </div>
       )}
