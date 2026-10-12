@@ -94,9 +94,9 @@
 .survey-pdf-pairs div { display: grid; gap: 2px; min-width: 0; }
 .survey-pdf-pairs strong { overflow-wrap: anywhere; }
 .survey-pdf-pairs span { color: #64748b; font-size: 9px; }
-.survey-pdf-workers { width: 100%; border-collapse: collapse; font-size: 9px; }
+.survey-pdf-workers { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 8px; }
 .survey-pdf-workers th { color: #fff; background: #3975ab; }
-.survey-pdf-workers th, .survey-pdf-workers td { padding: 4px 3px; border: 1px solid #d5e1eb; text-align: right; }
+.survey-pdf-workers th, .survey-pdf-workers td { padding: 3px 2px; border: 1px solid #d5e1eb; text-align: right; overflow-wrap: anywhere; }
 .survey-pdf-workers tr:nth-child(even) td { background: #f4f8fc; }
 .survey-pdf-empty { padding: 12px; color: #64748b; text-align: center; }
 .survey-pdf footer { margin-top: 8px; padding-top: 5px; border-top: 1px solid #cbd5e1; color: #64748b; font-size: 8px; }

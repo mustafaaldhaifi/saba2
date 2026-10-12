@@ -16,7 +16,7 @@ const validDate = (value) => {
 };
 
 export const emptyWorker = () => ({
-  id: crypto.randomUUID(), fullName: '', identityNumber: '', phoneNumber: '',
+  id: crypto.randomUUID(), fullName: '', employeeNumber: '', identityNumber: '', phoneNumber: '', hasBranchFingerprint: '',
   healthCertificateExpiryDate: '', educationExpiryDate: '',
 });
 
@@ -30,12 +30,14 @@ export const cleanSurveyAnswers = (questions, answers) => Object.fromEntries(que
       .map((worker) => ({
         id: worker.id || crypto.randomUUID(),
         fullName: cleanText(worker.fullName),
+        employeeNumber: cleanText(worker.employeeNumber),
         identityNumber: cleanDigits(worker.identityNumber),
         phoneNumber: cleanPhone(worker.phoneNumber),
+        hasBranchFingerprint: ['yes', 'no'].includes(worker.hasBranchFingerprint) ? worker.hasBranchFingerprint : '',
         healthCertificateExpiryDate: worker.healthCertificateExpiryDate || '',
         educationExpiryDate: worker.educationExpiryDate || '',
       }))
-      .filter((worker) => worker.fullName || worker.identityNumber || worker.phoneNumber || worker.healthCertificateExpiryDate || worker.educationExpiryDate),
+      .filter((worker) => worker.fullName || worker.employeeNumber || worker.identityNumber || worker.phoneNumber || worker.hasBranchFingerprint || worker.healthCertificateExpiryDate || worker.educationExpiryDate),
   }];
   return [question.id, answer];
 }));
@@ -58,8 +60,10 @@ export const validateSurveyAnswers = (questions, answers) => {
       const identities = new Set();
       for (const [index, worker] of workers.entries()) {
         if (worker.fullName.split(' ').length < 4) return `أدخل الاسم الرباعي للعامل ${index + 1}`;
+        if (!worker.employeeNumber) return `أدخل الرقم الوظيفي للعامل ${index + 1}`;
         if (!/^\d{10}$/.test(worker.identityNumber)) return `رقم هوية العامل ${index + 1} يجب أن يكون 10 أرقام`;
         if (!/^05\d{8}$/.test(worker.phoneNumber)) return `رقم جوال العامل ${index + 1} يجب أن يبدأ بـ 05 ويتكون من 10 أرقام`;
+        if (!['yes', 'no'].includes(worker.hasBranchFingerprint)) return `حدد هل توجد بصمة للعامل ${index + 1} في الفرع`;
         if (!validDate(worker.healthCertificateExpiryDate) || !validDate(worker.educationExpiryDate)) return `أكمل تاريخي انتهاء وثائق العامل ${index + 1}`;
         if (identities.has(worker.identityNumber)) return `رقم هوية مكرر في: ${question.label}`;
         identities.add(worker.identityNumber);
