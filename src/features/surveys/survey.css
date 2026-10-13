@@ -68,6 +68,13 @@
 .survey-worker-row { border: 1px solid #dbeafe; border-radius: var(--radius-md); background: #f8fbff; padding: .9rem; }
 .survey-worker-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; margin-top: .7rem; }
 .survey-worker-fields label { display: grid; gap: .25rem; font-size: .85rem; }
+.survey-date-field { display: grid; gap: .35rem; min-width: 0; }
+.survey-date-label { font-weight: 600; }
+.survey-calendar-toggle { display: flex; gap: .3rem; }
+.survey-calendar-toggle button { border: 1px solid #cbd5e1; background: #fff; color: #334155; border-radius: 5px; padding: .2rem .55rem; cursor: pointer; font: inherit; font-size: .8rem; }
+.survey-calendar-toggle button.selected { background: #e0f2fe; border-color: #0284c7; color: #075985; }
+.survey-date-field small { color: #64748b; }
+.survey-date-field .survey-date-invalid { color: #b91c1c; }
 .survey-admin-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 .survey-danger { background: #fef2f2; color: #b91c1c; }
 .survey-pdf-host { position: fixed; left: -20000px; top: 0; width: 720px; pointer-events: none; }
@@ -94,6 +101,7 @@
 .survey-pdf-pairs div { display: grid; gap: 2px; min-width: 0; }
 .survey-pdf-pairs strong { overflow-wrap: anywhere; }
 .survey-pdf-pairs span { color: #64748b; font-size: 9px; }
+.survey-pdf .survey-pdf-alert { color: #b91c1c; font-weight: 700; }
 .survey-pdf-workers { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 8px; }
 .survey-pdf-workers th { color: #fff; background: #3975ab; }
 .survey-pdf-workers th, .survey-pdf-workers td { padding: 3px 2px; border: 1px solid #d5e1eb; text-align: right; overflow-wrap: anywhere; }

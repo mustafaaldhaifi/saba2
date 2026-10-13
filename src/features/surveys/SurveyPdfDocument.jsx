@@ -1,18 +1,20 @@
 import { QUESTION_TYPES, RESPONSE_STATUS, formatMonth } from './surveyConstants';
-import { getResponseMonth, listDueOccurrencesInMonth, occurrenceDateOfResponse } from './surveySchedule';
+import { getResponseMonth, getZonedDateTime, listDueOccurrencesInMonth, occurrenceDateOfResponse } from './surveySchedule';
+import { isExpiredDate } from './surveyDates';
 
 const SurveyPdfAnswers = ({ response, survey }) => {
   const questions = response.surveySnapshot?.questions || survey.questions || [];
+  const today = getZonedDateTime().date;
   return <div className="survey-pdf-answer-grid">{questions.map((question) => {
     const answer = response.answers?.[question.id] || {};
     const wide = question.type === QUESTION_TYPES.HEALTH_DOCUMENTS
       || (question.type === QUESTION_TYPES.NOTES && (answer.value || '').length > 120)
       || (question.type === QUESTION_TYPES.YES_NO && (answer.reason || '').length > 120);
     return <article className={`survey-pdf-question${wide ? ' survey-pdf-question-wide' : ''}`} key={question.id}><h2>{question.label}</h2>
-      {question.type === QUESTION_TYPES.DOCUMENT && <div className="survey-pdf-pairs"><div><span>رقم الوثيقة</span><strong>{answer.documentNumber || '—'}</strong></div><div><span>تاريخ الانتهاء</span><strong>{answer.expiryDate || '—'}</strong></div></div>}
-      {question.type === QUESTION_TYPES.YES_NO && <div className="survey-pdf-pairs"><div><span>الإجابة</span><strong>{answer.value === 'yes' ? 'نعم' : answer.value === 'no' ? 'لا' : '—'}</strong></div>{answer.value === 'no' && <div><span>السبب</span><strong>{answer.reason || '—'}</strong></div>}</div>}
+      {question.type === QUESTION_TYPES.DOCUMENT && <div className="survey-pdf-pairs"><div><span>رقم الوثيقة</span><strong>{answer.documentNumber || '—'}</strong></div><div><span>تاريخ الانتهاء</span><strong className={isExpiredDate(answer.expiryDate, today) ? 'survey-pdf-alert' : undefined}>{answer.expiryDate || '—'}</strong></div></div>}
+      {question.type === QUESTION_TYPES.YES_NO && <div className="survey-pdf-pairs"><div><span>الإجابة</span><strong className={answer.value === 'no' ? 'survey-pdf-alert' : undefined}>{answer.value === 'yes' ? 'نعم' : answer.value === 'no' ? 'لا' : '—'}</strong></div>{answer.value === 'no' && <div><span>السبب</span><strong>{answer.reason || '—'}</strong></div>}</div>}
       {question.type === QUESTION_TYPES.NOTES && <p>{answer.value || '—'}</p>}
-      {question.type === QUESTION_TYPES.HEALTH_DOCUMENTS && <table className="survey-pdf-workers"><thead><tr><th>الاسم الرباعي</th><th>الرقم الوظيفي</th><th>رقم الهوية</th><th>رقم الجوال</th><th>بصمة في الفرع</th><th>انتهاء الشهادة الصحية</th><th>انتهاء التثقيف</th></tr></thead><tbody>{(answer.workers || []).map((worker) => <tr key={worker.id}><td>{worker.fullName}</td><td>{worker.employeeNumber || '—'}</td><td>{worker.identityNumber}</td><td>{worker.phoneNumber}</td><td>{worker.hasBranchFingerprint === 'yes' ? 'نعم' : worker.hasBranchFingerprint === 'no' ? 'لا' : '—'}</td><td>{worker.healthCertificateExpiryDate || '—'}</td><td>{worker.educationExpiryDate || '—'}</td></tr>)}</tbody></table>}
+      {question.type === QUESTION_TYPES.HEALTH_DOCUMENTS && <table className="survey-pdf-workers"><thead><tr><th>الاسم الرباعي</th><th>الرقم الوظيفي</th><th>رقم الهوية</th><th>رقم الجوال</th><th>بصمة في الفرع</th><th>انتهاء الشهادة الصحية</th><th>انتهاء التثقيف</th></tr></thead><tbody>{(answer.workers || []).map((worker) => <tr key={worker.id}><td>{worker.fullName}</td><td>{worker.employeeNumber || '—'}</td><td>{worker.identityNumber}</td><td>{worker.phoneNumber}</td><td className={worker.hasBranchFingerprint === 'no' ? 'survey-pdf-alert' : undefined}>{worker.hasBranchFingerprint === 'yes' ? 'نعم' : worker.hasBranchFingerprint === 'no' ? 'لا' : '—'}</td><td className={isExpiredDate(worker.healthCertificateExpiryDate, today) ? 'survey-pdf-alert' : undefined}>{worker.healthCertificateExpiryDate || '—'}</td><td className={isExpiredDate(worker.educationExpiryDate, today) ? 'survey-pdf-alert' : undefined}>{worker.educationExpiryDate || '—'}</td></tr>)}</tbody></table>}
     </article>;
   })}</div>;
 };

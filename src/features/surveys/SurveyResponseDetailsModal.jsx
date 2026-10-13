@@ -4,6 +4,7 @@ import { QUESTION_TYPES, RESPONSE_STATUS, formatMonth } from './surveyConstants'
 import { correctSurveyResponse } from './surveyService';
 import { cleanSurveyAnswers, validateSurveyAnswers } from './surveyValidation';
 import HealthWorkersEditor from './HealthWorkersEditor';
+import SurveyDateField from './SurveyDateField';
 import { getResponseMonth, occurrenceDateOfResponse } from './surveySchedule';
 
 const SurveyResponseDetailsModal = ({ response, branch, survey, onClose, onUpdated }) => {
@@ -36,7 +37,7 @@ const SurveyResponseDetailsModal = ({ response, branch, survey, onClose, onUpdat
         const answer = answers[question.id] || {};
         return <article className="survey-response-answer" key={question.id}><h3>{question.label}</h3>
           {editing ? <>
-            {question.type === QUESTION_TYPES.DOCUMENT && <div className="survey-document-fields"><input className="input-field" placeholder="رقم الوثيقة" value={answer.documentNumber || ''} onChange={(event) => updateAnswer(question.id, { documentNumber: event.target.value })} /><input className="input-field" type="date" value={answer.expiryDate || ''} onChange={(event) => updateAnswer(question.id, { expiryDate: event.target.value })} /></div>}
+            {question.type === QUESTION_TYPES.DOCUMENT && <div className="survey-document-fields"><input className="input-field" placeholder="رقم الوثيقة" value={answer.documentNumber || ''} onChange={(event) => updateAnswer(question.id, { documentNumber: event.target.value })} /><SurveyDateField label="تاريخ الانتهاء" value={answer.expiryDate || ''} onChange={(expiryDate) => updateAnswer(question.id, { expiryDate })} disabled={saving} /></div>}
             {question.type === QUESTION_TYPES.YES_NO && <><select className="input-field" value={answer.value || ''} onChange={(event) => updateAnswer(question.id, { value: event.target.value, reason: event.target.value === 'no' ? answer.reason || '' : '' })}><option value="">اختر الإجابة</option><option value="yes">نعم</option><option value="no">لا</option></select>{answer.value === 'no' && <textarea className="input-field" placeholder="السبب" value={answer.reason || ''} onChange={(event) => updateAnswer(question.id, { reason: event.target.value })} />}</>}
             {question.type === QUESTION_TYPES.NOTES && <textarea className="input-field" value={answer.value || ''} onChange={(event) => updateAnswer(question.id, { value: event.target.value })} />}
             {question.type === QUESTION_TYPES.HEALTH_DOCUMENTS && <HealthWorkersEditor workers={answer.workers || []} onChange={(workers) => updateAnswer(question.id, { workers })} disabled={saving} />}
