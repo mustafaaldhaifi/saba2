@@ -4,6 +4,7 @@ import { QUESTION_TYPES, RESPONSE_STATUS } from './surveyConstants';
 import { getSurveyResponse, getVisibleSurveysForBranch, saveSurveyResponse } from './surveyService';
 import HealthWorkersEditor from './HealthWorkersEditor';
 import SurveyDateField from './SurveyDateField';
+import AvailabilityChoice from './AvailabilityChoice';
 import { cleanSurveyAnswers, validateSurveyAnswers } from './surveyValidation';
 import { getScheduleForOccurrence } from './surveySchedule';
 import './survey.css';
@@ -15,7 +16,7 @@ const answersFor = (survey, savedAnswers = {}) => Object.fromEntries(survey.ques
     : question.type === QUESTION_TYPES.YES_NO
     ? { value: '', reason: '' }
     : question.type === QUESTION_TYPES.DOCUMENT
-      ? { documentNumber: '', expiryDate: '' }
+      ? { status: 'available', documentNumber: '', expiryDate: '' }
       : { value: '' }),
 ]));
 
@@ -137,7 +138,7 @@ const BranchSurveyPanel = ({ branchId }) => {
               return (
                 <div className="survey-question" key={question.id}>
                   <label>{question.label}{question.required && <em> *</em>}</label>
-                  {question.type === QUESTION_TYPES.DOCUMENT && <div className="survey-document-fields"><input className="input-field" placeholder="رقم الوثيقة" value={answer.documentNumber || ''} onChange={(event) => updateAnswer(question.id, { documentNumber: event.target.value })} /><SurveyDateField label="تاريخ الانتهاء" value={answer.expiryDate || ''} onChange={(expiryDate) => updateAnswer(question.id, { expiryDate })} /></div>}
+                  {question.type === QUESTION_TYPES.DOCUMENT && <div className="survey-document-fields"><AvailabilityChoice label="حالة الوثيقة" value={answer.status || 'available'} onChange={(status) => updateAnswer(question.id, { status, ...(status === 'missing' ? { documentNumber: '', expiryDate: '' } : {}) })} />{(answer.status || 'available') === 'missing' ? <p className="survey-missing-note">الوثيقة غير موجودة</p> : <><input className="input-field" placeholder="رقم الوثيقة" value={answer.documentNumber || ''} onChange={(event) => updateAnswer(question.id, { documentNumber: event.target.value })} /><SurveyDateField label="تاريخ الانتهاء" value={answer.expiryDate || ''} onChange={(expiryDate) => updateAnswer(question.id, { expiryDate })} /></>}</div>}
                   {question.type === QUESTION_TYPES.YES_NO && <><div className="survey-choice-group"><button type="button" className={answer.value === 'yes' ? 'selected yes' : ''} onClick={() => updateAnswer(question.id, { value: 'yes', reason: '' })}>نعم</button><button type="button" className={answer.value === 'no' ? 'selected no' : ''} onClick={() => updateAnswer(question.id, { value: 'no' })}>لا</button></div>{answer.value === 'no' && question.reasonRequiredWhen === 'no' && <textarea className="input-field" placeholder="سبب عدم التصحيح" value={answer.reason || ''} onChange={(event) => updateAnswer(question.id, { reason: event.target.value })} />}</>}
                   {question.type === QUESTION_TYPES.NOTES && <textarea className="input-field" rows="4" value={answer.value || ''} onChange={(event) => updateAnswer(question.id, { value: event.target.value })} />}
                   {question.type === QUESTION_TYPES.HEALTH_DOCUMENTS && <HealthWorkersEditor workers={answer.workers || []} onChange={(workers) => updateAnswer(question.id, { workers })} disabled={isSaving} />}

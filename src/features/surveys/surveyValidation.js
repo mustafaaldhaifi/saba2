@@ -17,12 +17,13 @@ const validDate = (value) => {
 
 export const emptyWorker = () => ({
   id: crypto.randomUUID(), fullName: '', employeeNumber: '', identityNumber: '', phoneNumber: '', hasBranchFingerprint: '',
+  healthCertificateStatus: 'available', educationCertificateStatus: 'available',
   healthCertificateExpiryDate: '', educationExpiryDate: '',
 });
 
 export const cleanSurveyAnswers = (questions, answers) => Object.fromEntries(questions.map((question) => {
   const answer = answers?.[question.id] || {};
-  if (question.type === QUESTION_TYPES.DOCUMENT) return [question.id, { documentNumber: cleanText(answer.documentNumber), expiryDate: answer.expiryDate || '' }];
+  if (question.type === QUESTION_TYPES.DOCUMENT) return [question.id, { status: answer.status === 'missing' ? 'missing' : 'available', documentNumber: answer.status === 'missing' ? '' : cleanText(answer.documentNumber), expiryDate: answer.status === 'missing' ? '' : answer.expiryDate || '' }];
   if (question.type === QUESTION_TYPES.YES_NO) return [question.id, { value: answer.value === 'yes' || answer.value === 'no' ? answer.value : '', reason: answer.value === 'no' ? cleanText(answer.reason) : '' }];
   if (question.type === QUESTION_TYPES.NOTES) return [question.id, { value: cleanText(answer.value) }];
   if (question.type === QUESTION_TYPES.HEALTH_DOCUMENTS) return [question.id, {
@@ -34,8 +35,10 @@ export const cleanSurveyAnswers = (questions, answers) => Object.fromEntries(que
         identityNumber: cleanDigits(worker.identityNumber),
         phoneNumber: cleanPhone(worker.phoneNumber),
         hasBranchFingerprint: ['yes', 'no'].includes(worker.hasBranchFingerprint) ? worker.hasBranchFingerprint : '',
-        healthCertificateExpiryDate: worker.healthCertificateExpiryDate || '',
-        educationExpiryDate: worker.educationExpiryDate || '',
+        healthCertificateStatus: worker.healthCertificateStatus === 'missing' ? 'missing' : 'available',
+        educationCertificateStatus: worker.educationCertificateStatus === 'missing' ? 'missing' : 'available',
+        healthCertificateExpiryDate: worker.healthCertificateStatus === 'missing' ? '' : worker.healthCertificateExpiryDate || '',
+        educationExpiryDate: worker.educationCertificateStatus === 'missing' ? '' : worker.educationExpiryDate || '',
       }))
       .filter((worker) => worker.fullName || worker.employeeNumber || worker.identityNumber || worker.phoneNumber || worker.hasBranchFingerprint || worker.healthCertificateExpiryDate || worker.educationExpiryDate),
   }];
@@ -46,8 +49,8 @@ export const validateSurveyAnswers = (questions, answers) => {
   for (const question of questions) {
     const answer = answers?.[question.id] || {};
     if (question.type === QUESTION_TYPES.DOCUMENT) {
-      if (question.required && (!answer.documentNumber || !answer.expiryDate)) return `أكمل بيانات: ${question.label}`;
-      if (answer.expiryDate && !validDate(answer.expiryDate)) return `تاريخ انتهاء غير صحيح: ${question.label}`;
+      if (answer.status !== 'missing' && question.required && (!answer.documentNumber || !answer.expiryDate)) return `أكمل بيانات: ${question.label}`;
+      if (answer.status !== 'missing' && answer.expiryDate && !validDate(answer.expiryDate)) return `تاريخ انتهاء غير صحيح: ${question.label}`;
     }
     if (question.type === QUESTION_TYPES.YES_NO) {
       if (question.required && !['yes', 'no'].includes(answer.value)) return `اختر إجابة: ${question.label}`;
@@ -64,7 +67,7 @@ export const validateSurveyAnswers = (questions, answers) => {
         if (!/^\d{10}$/.test(worker.identityNumber)) return `رقم هوية العامل ${index + 1} يجب أن يكون 10 أرقام`;
         if (!/^05\d{8}$/.test(worker.phoneNumber)) return `رقم جوال العامل ${index + 1} يجب أن يبدأ بـ 05 ويتكون من 10 أرقام`;
         if (!['yes', 'no'].includes(worker.hasBranchFingerprint)) return `حدد هل توجد بصمة للعامل ${index + 1} في الفرع`;
-        if (!validDate(worker.healthCertificateExpiryDate) || !validDate(worker.educationExpiryDate)) return `أكمل تاريخي انتهاء وثائق العامل ${index + 1}`;
+        if ((worker.healthCertificateStatus !== 'missing' && !validDate(worker.healthCertificateExpiryDate)) || (worker.educationCertificateStatus !== 'missing' && !validDate(worker.educationExpiryDate))) return `أكمل تواريخ انتهاء وثائق العامل ${index + 1} أو حدد أنها غير موجودة`;
         if (identities.has(worker.identityNumber)) return `رقم هوية مكرر في: ${question.label}`;
         identities.add(worker.identityNumber);
       }

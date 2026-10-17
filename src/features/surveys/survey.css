@@ -75,6 +75,8 @@
 .survey-calendar-toggle button.selected { background: #e0f2fe; border-color: #0284c7; color: #075985; }
 .survey-date-field small { color: #64748b; }
 .survey-date-field .survey-date-invalid { color: #b91c1c; }
+.survey-availability-choice { display: grid; gap: .35rem; }
+.survey-missing-note { align-self: center; margin: 0; color: #b91c1c; font-weight: 700; }
 .survey-admin-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 .survey-danger { background: #fef2f2; color: #b91c1c; }
 .survey-pdf-host { position: fixed; left: -20000px; top: 0; width: 720px; pointer-events: none; }
