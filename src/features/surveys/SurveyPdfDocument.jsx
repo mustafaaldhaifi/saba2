@@ -2,10 +2,12 @@ import { QUESTION_TYPES, RESPONSE_STATUS, formatMonth } from './surveyConstants'
 import { getResponseMonth, getZonedDateTime, listDueOccurrencesInMonth, occurrenceDateOfResponse } from './surveySchedule';
 import { isExpiredDate } from './surveyDates';
 
-const SurveyPdfAnswers = ({ response, survey }) => {
+const SurveyPdfAnswers = ({ response, survey, questionId }) => {
   const questions = response.surveySnapshot?.questions || survey.questions || [];
+  const visibleQuestions = questionId ? questions.filter((question) => question.id === questionId) : questions;
   const today = getZonedDateTime().date;
-  return <div className="survey-pdf-answer-grid">{questions.map((question) => {
+  if (questionId && visibleQuestions.length === 0) return <p className="survey-pdf-empty">هذا الحقل غير موجود في نسخة الاستبيان التي أجاب عنها الفرع.</p>;
+  return <div className="survey-pdf-answer-grid">{visibleQuestions.map((question) => {
     const answer = response.answers?.[question.id] || {};
     const wide = question.type === QUESTION_TYPES.HEALTH_DOCUMENTS
       || (question.type === QUESTION_TYPES.NOTES && (answer.value || '').length > 120)
@@ -19,19 +21,19 @@ const SurveyPdfAnswers = ({ response, survey }) => {
   })}</div>;
 };
 
-const SurveyPdfDocument = ({ survey, month, branches, responses }) => <div className="survey-pdf" dir="rtl">
+const SurveyPdfDocument = ({ survey, month, branches, responses, question }) => <div className="survey-pdf" dir="rtl">
   {branches.map((branch, index) => {
     const branchResponses = responses.filter((response) => response.surveyId === survey.id && response.branchId === branch.id && getResponseMonth(response) === month);
     const dates = [...new Set([...listDueOccurrencesInMonth(survey, month), ...branchResponses.map(occurrenceDateOfResponse)])].sort();
     const completed = branchResponses.filter((response) => response.status === RESPONSE_STATUS.SUBMITTED).length;
     return <section className="survey-pdf-branch" key={branch.id}>
-      <header className="survey-pdf-header"><div><span className="survey-pdf-kicker">نظام سبأ · تقرير الاستبيانات</span><h1>{survey.title}</h1><p>{formatMonth(month)} · {branch.name || branch.id}</p></div><div className="survey-pdf-number">{index + 1} / {branches.length}</div></header>
+      <header className="survey-pdf-header"><div><span className="survey-pdf-kicker">نظام سبأ · تقرير الاستبيانات</span><h1>{question ? question.label : survey.title}</h1><p>{survey.title} · {formatMonth(month)} · {branch.name || branch.id}</p></div><div className="survey-pdf-number">{index + 1} / {branches.length}</div></header>
       <div className="survey-pdf-status"><strong>المواعيد</strong><span>{completed} مكتمل من {dates.length}</span></div>
       {dates.length ? dates.map((date) => {
         const response = branchResponses.find((item) => occurrenceDateOfResponse(item) === date);
         return <section className="survey-pdf-occurrence" key={date}>
           <div className="survey-pdf-occurrence-heading"><strong>موعد {date}</strong><span>{response?.status === RESPONSE_STATUS.SUBMITTED ? 'تم الإرسال' : response?.status === RESPONSE_STATUS.DRAFT ? 'مسودة' : 'لم يرسل'}</span></div>
-          {response && <SurveyPdfAnswers response={response} survey={survey} />}
+          {response && <SurveyPdfAnswers response={response} survey={survey} questionId={question?.id} />}
         </section>;
       }) : <p className="survey-pdf-empty">لا توجد مواعيد مستحقة لهذا الفرع في الشهر المحدد.</p>}
       <footer>تاريخ إنشاء التقرير: {new Date().toLocaleString('ar-SA')} · {branch.name || branch.id}</footer>
