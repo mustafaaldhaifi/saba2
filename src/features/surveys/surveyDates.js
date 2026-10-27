@@ -34,3 +34,24 @@ export const hijriToGregorian = (value) => {
 };
 
 export const isExpiredDate = (value, today) => isValidGregorianDate(value) && value < today;
+
+export const normalizeExpiryDate = (value) => {
+  if (typeof value !== 'string') return null;
+  const year = Number(value.slice(0, 4));
+  if (year >= 1300 && year <= 1600) return hijriToGregorian(value);
+  return isValidGregorianDate(value) ? value : null;
+};
+
+export const daysUntilExpiry = (value, today) => {
+  const expiry = normalizeExpiryDate(value);
+  if (!expiry || !isValidGregorianDate(today)) return null;
+  return (Date.parse(`${expiry}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / dayMs;
+};
+
+export const formatExpiryDate = (value, calendar) => {
+  if (!value) return '—';
+  const gregorian = normalizeExpiryDate(value);
+  if (!gregorian) return `تاريخ غير صالح: ${value}`;
+  const isHijri = calendar === 'hijri' || Number(value.slice(0, 4)) <= 1600;
+  return isHijri ? `${value === gregorian ? gregorianToHijri(gregorian) : value} هـ` : `${gregorian} م`;
+};

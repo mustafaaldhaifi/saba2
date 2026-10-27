@@ -18,12 +18,12 @@ const validDate = (value) => {
 export const emptyWorker = () => ({
   id: crypto.randomUUID(), fullName: '', employeeNumber: '', identityNumber: '', phoneNumber: '', hasBranchFingerprint: '',
   healthCertificateStatus: 'available', educationCertificateStatus: 'available',
-  healthCertificateExpiryDate: '', educationExpiryDate: '',
+  healthCertificateExpiryDate: '', educationExpiryDate: '', healthCertificateExpiryDateCalendar: 'gregorian', educationExpiryDateCalendar: 'gregorian',
 });
 
 export const cleanSurveyAnswers = (questions, answers) => Object.fromEntries(questions.map((question) => {
   const answer = answers?.[question.id] || {};
-  if (question.type === QUESTION_TYPES.DOCUMENT) return [question.id, { status: answer.status === 'missing' ? 'missing' : 'available', documentNumber: answer.status === 'missing' ? '' : cleanText(answer.documentNumber), expiryDate: answer.status === 'missing' ? '' : answer.expiryDate || '' }];
+  if (question.type === QUESTION_TYPES.DOCUMENT) return [question.id, { status: answer.status === 'missing' ? 'missing' : 'available', documentNumber: answer.status === 'missing' ? '' : cleanText(answer.documentNumber), expiryDate: answer.status === 'missing' ? '' : answer.expiryDate || '', expiryDateCalendar: answer.expiryDateCalendar === 'hijri' ? 'hijri' : 'gregorian' }];
   if (question.type === QUESTION_TYPES.YES_NO) return [question.id, { value: answer.value === 'yes' || answer.value === 'no' ? answer.value : '', reason: answer.value === 'no' ? cleanText(answer.reason) : '' }];
   if (question.type === QUESTION_TYPES.NOTES) return [question.id, { value: cleanText(answer.value) }];
   if (question.type === QUESTION_TYPES.HEALTH_DOCUMENTS) return [question.id, {
@@ -38,7 +38,9 @@ export const cleanSurveyAnswers = (questions, answers) => Object.fromEntries(que
         healthCertificateStatus: worker.healthCertificateStatus === 'missing' ? 'missing' : 'available',
         educationCertificateStatus: worker.educationCertificateStatus === 'missing' ? 'missing' : 'available',
         healthCertificateExpiryDate: worker.healthCertificateStatus === 'missing' ? '' : worker.healthCertificateExpiryDate || '',
+        healthCertificateExpiryDateCalendar: worker.healthCertificateExpiryDateCalendar === 'hijri' ? 'hijri' : 'gregorian',
         educationExpiryDate: worker.educationCertificateStatus === 'missing' ? '' : worker.educationExpiryDate || '',
+        educationExpiryDateCalendar: worker.educationExpiryDateCalendar === 'hijri' ? 'hijri' : 'gregorian',
       }))
       .filter((worker) => worker.fullName || worker.employeeNumber || worker.identityNumber || worker.phoneNumber || worker.hasBranchFingerprint || worker.healthCertificateExpiryDate || worker.educationExpiryDate),
   }];

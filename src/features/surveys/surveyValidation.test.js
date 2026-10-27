@@ -19,7 +19,7 @@ test('normalizes worker identity and phone digits without losing leading zeros',
 
 test('rejects duplicate identities and invalid calendar dates', () => {
   const worker = { id: 'one', fullName: 'أحمد محمد علي صالح', employeeNumber: 'EMP-1024', identityNumber: '1234567890', phoneNumber: '0501234567', hasBranchFingerprint: 'no', healthCertificateExpiryDate: '2027-02-30', educationExpiryDate: '2027-08-15' };
-  assert.match(validateSurveyAnswers(questions, { health: { workers: [worker] } }), /تاريخي انتهاء/);
+  assert.match(validateSurveyAnswers(questions, { health: { workers: [worker] } }), /تواريخ انتهاء/);
   const validWorker = { ...worker, healthCertificateExpiryDate: '2027-02-28' };
   assert.match(validateSurveyAnswers(questions, { health: { workers: [validWorker, { ...validWorker, id: 'two' }] } }), /مكرر/);
 });
@@ -29,4 +29,16 @@ test('requires employee number and branch fingerprint for submitted workers', ()
   assert.match(validateSurveyAnswers(questions, { health: { workers: [worker] } }), /الرقم الوظيفي/);
   assert.match(validateSurveyAnswers(questions, { health: { workers: [{ ...worker, employeeNumber: 'EMP-1024' }] } }), /بصمة/);
   assert.equal(validateSurveyAnswers(questions, { health: { workers: [{ ...worker, employeeNumber: 'EMP-1024', hasBranchFingerprint: 'no' }] } }), null);
+});
+
+test('preserves the selected calendar for expiry dates', () => {
+  const cleaned = cleanSurveyAnswers([
+    { id: 'document', type: 'document' },
+    { id: 'health', type: 'health_documents' },
+  ], {
+    document: { expiryDate: '2026-10-28', expiryDateCalendar: 'hijri' },
+    health: { workers: [{ id: 'one', fullName: 'أحمد محمد علي صالح', healthCertificateExpiryDate: '2026-10-28', healthCertificateExpiryDateCalendar: 'hijri' }] },
+  });
+  assert.equal(cleaned.document.expiryDateCalendar, 'hijri');
+  assert.equal(cleaned.health.workers[0].healthCertificateExpiryDateCalendar, 'hijri');
 });
