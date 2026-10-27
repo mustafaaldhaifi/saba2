@@ -5,6 +5,7 @@ import { createSurvey, deleteSurveyMonth, deleteSurveyPermanently, getBranches, 
 import SurveyEditor from './SurveyEditor';
 import SurveyResponseDetailsModal from './SurveyResponseDetailsModal';
 import SurveyPdfDocument from './SurveyPdfDocument';
+import SurveyFieldPdfDocument from './SurveyFieldPdfDocument';
 import { getLatestDueOccurrence, getResponseMonth, getSurveySchedule, listDueOccurrencesInMonth, occurrenceDateOfResponse } from './surveySchedule';
 import './survey.css';
 
@@ -25,6 +26,7 @@ const SurveysDashboard = () => {
   const [exportMonth, setExportMonth] = useState(getCurrentMonth());
   const [exportBranchIds, setExportBranchIds] = useState([]);
   const [exportQuestionId, setExportQuestionId] = useState('');
+  const [exportDate, setExportDate] = useState('');
   const [exporting, setExporting] = useState(false);
   const pdfRef = useRef(null);
   const fieldPdfRef = useRef(null);
@@ -43,6 +45,11 @@ const SurveysDashboard = () => {
     return [...currentQuestions, ...previousQuestions.map((question) => ({ ...question, previous: true }))];
   }, [selectedSurvey, responses, exportMonth]);
   const exportQuestion = exportQuestions.find((question) => question.id === exportQuestionId) || null;
+  const exportDates = selectedSurvey ? [...new Set([
+    ...listDueOccurrencesInMonth(selectedSurvey, exportMonth),
+    ...responses.filter((response) => getResponseMonth(response) === exportMonth).map(occurrenceDateOfResponse).filter(Boolean),
+  ])].sort().reverse() : [];
+  const selectedExportDate = exportDates.includes(exportDate) ? exportDate : exportDates[0] || '';
 
   const loadSurveys = useCallback(async () => {
     try {
@@ -115,16 +122,16 @@ const SurveysDashboard = () => {
 
   const exportPdf = async (question = null) => {
     const reportRef = question ? fieldPdfRef : pdfRef;
-    if (!selectedSurvey || exportBranchIds.length === 0 || !reportRef.current) return;
+    if (!selectedSurvey || exportBranchIds.length === 0 || !reportRef.current || (question && !selectedExportDate)) return;
     try {
       setExporting(true);
       const { default: html2pdf } = await import('html2pdf.js');
-      const filename = `استبيان_${selectedSurvey.title}_${question ? `${question.label}_` : ''}${exportMonth}.pdf`.replace(/[\\/:*?"<>|]/g, '_');
+      const filename = `استبيان_${selectedSurvey.title}_${question ? `${question.label}_${selectedExportDate}` : exportMonth}.pdf`.replace(/[\\/:*?"<>|]/g, '_');
       await html2pdf().set({
         margin: [8, 8, 8, 8], filename,
         image: { type: 'jpeg', quality: 0.97 },
         html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', windowWidth: 760 },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: question?.type === 'health_documents' ? 'landscape' : 'portrait' },
         pagebreak: { mode: ['css'] },
       }).from(reportRef.current).save();
       setMessage(question ? `تم تصدير تقرير «${question.label}» لـ ${exportBranchIds.length} فرع.` : `تم تصدير ${exportBranchIds.length} فرع في ملف PDF واحد.`);
@@ -156,9 +163,9 @@ const SurveysDashboard = () => {
       {selectedCell && selectedSurvey && <div className="survey-occurrences"><div className="survey-section-heading"><h3>{selectedCell.branch.name || selectedCell.branch.id} · {formatMonth(selectedCell.month)}</h3><button type="button" className="survey-close" onClick={() => setSelectedCell(null)}>×</button></div>{getCellDates(selectedCell.branch.id, selectedCell.month).map((date) => { const response = getResponse(selectedCell.branch.id, date); const state = response?.status || (latestDue && date < latestDue ? 'missed' : 'pending'); return <div className="survey-occurrence-row" key={date}><strong>{date}</strong><span className={`survey-response-state ${state}`}>{response?.status === RESPONSE_STATUS.SUBMITTED ? 'تم الإرسال' : response?.status === RESPONSE_STATUS.DRAFT ? 'مسودة' : state === 'missed' ? 'فات موعده' : 'بانتظار الإجابة'}</span>{response && <button type="button" className="btn survey-secondary" onClick={() => setSelectedResponse({ response, branch: selectedCell.branch })}>عرض التفاصيل</button>}</div>; })}</div>}
     </section>
 
-    {selectedSurvey && <section className="survey-monitor card"><h2>تصدير وتنظيف بيانات الاستبيان</h2><p className="survey-helper">اختر الشهر والفروع، ثم صدّر التقرير الشامل أو تقريراً مستقلاً للحقل المختار.</p><div className="survey-form-grid"><label>الشهر<select className="input-field" value={exportMonth} onChange={(event) => { setExportMonth(event.target.value); setExportQuestionId(''); }}>{months.map((month) => <option key={month} value={month}>{formatMonth(month)}</option>)}</select></label><label>الفروع المحددة: {exportBranchIds.length}<button type="button" className="btn survey-secondary" onClick={() => setExportBranchIds(exportBranchIds.length === visibleBranches.length ? [] : visibleBranches.map((branch) => branch.id))}>{exportBranchIds.length === visibleBranches.length ? 'إلغاء اختيار الكل' : 'اختيار الكل'}</button></label><label>حقل الاستبيان<select className="input-field" value={exportQuestionId} onChange={(event) => setExportQuestionId(event.target.value)}><option value="">اختر حقلًا</option>{exportQuestions.map((question) => <option key={question.id} value={question.id}>{question.label}{question.previous ? ' (حقل سابق)' : ''}</option>)}</select></label></div><div className="survey-checkbox-grid">{visibleBranches.map((branch) => <label key={branch.id}><input type="checkbox" checked={exportBranchIds.includes(branch.id)} onChange={() => setExportBranchIds((current) => current.includes(branch.id) ? current.filter((id) => id !== branch.id) : [...current, branch.id])} /> {branch.name || branch.id}</label>)}</div><div className="survey-actions survey-export-actions"><button type="button" className="btn btn-primary" disabled={!exportBranchIds.length || exporting || responsesLoading} onClick={() => exportPdf()}>{exporting ? 'جاري تجهيز PDF...' : `تصدير التقرير الشامل (${exportBranchIds.length} فرع)`}</button><button type="button" className="btn survey-secondary" disabled={!exportQuestion || !exportBranchIds.length || exporting || responsesLoading} onClick={() => exportPdf(exportQuestion)}>تصدير تقرير الحقل</button>{exportMonth !== getCurrentMonth() && responses.some((response) => getResponseMonth(response) === exportMonth) && <button type="button" className="btn survey-danger" onClick={removeMonth}>حذف إجابات هذا الشهر نهائياً</button>}</div></section>}
+    {selectedSurvey && <section className="survey-monitor card"><h2>تصدير وتنظيف بيانات الاستبيان</h2><p className="survey-helper">اختر الشهر والفروع والحقل وتاريخ الموعد. تقرير الحقل يعرض الفروع في صفوف والبيانات في أعمدة.</p><div className="survey-form-grid"><label>الشهر<select className="input-field" value={exportMonth} onChange={(event) => { setExportMonth(event.target.value); setExportQuestionId(''); setExportDate(''); }}>{months.map((month) => <option key={month} value={month}>{formatMonth(month)}</option>)}</select></label><label>الفروع المحددة: {exportBranchIds.length}<button type="button" className="btn survey-secondary" onClick={() => setExportBranchIds(exportBranchIds.length === visibleBranches.length ? [] : visibleBranches.map((branch) => branch.id))}>{exportBranchIds.length === visibleBranches.length ? 'إلغاء اختيار الكل' : 'اختيار الكل'}</button></label><label>حقل الاستبيان<select className="input-field" value={exportQuestionId} onChange={(event) => setExportQuestionId(event.target.value)}><option value="">اختر حقلًا</option>{exportQuestions.map((question) => <option key={question.id} value={question.id}>{question.label}{question.previous ? ' (حقل سابق)' : ''}</option>)}</select></label><label>تاريخ موعد الاستبيان<select className="input-field" value={selectedExportDate} onChange={(event) => setExportDate(event.target.value)} disabled={!exportDates.length}><option value="" disabled>لا توجد مواعيد في هذا الشهر</option>{exportDates.map((date) => <option key={date} value={date}>{date}</option>)}</select></label></div><div className="survey-checkbox-grid">{visibleBranches.map((branch) => <label key={branch.id}><input type="checkbox" checked={exportBranchIds.includes(branch.id)} onChange={() => setExportBranchIds((current) => current.includes(branch.id) ? current.filter((id) => id !== branch.id) : [...current, branch.id])} /> {branch.name || branch.id}</label>)}</div><div className="survey-actions survey-export-actions"><button type="button" className="btn survey-secondary" disabled={!exportBranchIds.length || exporting || responsesLoading} onClick={() => exportPdf()}>{exporting ? 'جاري تجهيز PDF...' : `تصدير التقرير الشامل (${exportBranchIds.length} فرع)`}</button><button type="button" className="btn btn-primary" disabled={!exportQuestion || !selectedExportDate || !exportBranchIds.length || exporting || responsesLoading} onClick={() => exportPdf(exportQuestion)}>تصدير تقرير الحقل</button>{exportMonth !== getCurrentMonth() && responses.some((response) => getResponseMonth(response) === exportMonth) && <button type="button" className="btn survey-danger" onClick={removeMonth}>حذف إجابات هذا الشهر نهائياً</button>}</div></section>}
 
-    {selectedSurvey && exportBranches.length > 0 && <div className="survey-pdf-host" aria-hidden="true"><div ref={pdfRef}><SurveyPdfDocument survey={selectedSurvey} month={exportMonth} branches={exportBranches} responses={responses} /></div>{exportQuestion && <div ref={fieldPdfRef}><SurveyPdfDocument survey={selectedSurvey} month={exportMonth} branches={exportBranches} responses={responses} question={exportQuestion} /></div>}</div>}
+    {selectedSurvey && exportBranches.length > 0 && <div className="survey-pdf-host" aria-hidden="true"><div ref={pdfRef}><SurveyPdfDocument survey={selectedSurvey} month={exportMonth} branches={exportBranches} responses={responses} /></div>{exportQuestion && <div ref={fieldPdfRef}><SurveyFieldPdfDocument survey={selectedSurvey} question={exportQuestion} date={selectedExportDate} branches={exportBranches} responses={responses} /></div>}</div>}
     {selectedResponse && selectedSurvey && <SurveyResponseDetailsModal key={selectedResponse.response.id} response={selectedResponse.response} branch={selectedResponse.branch} survey={selectedSurvey} onClose={() => setSelectedResponse(null)} onUpdated={(updated) => { setResponses((current) => current.map((item) => item.id === updated.id ? updated : item)); setSelectedResponse({ ...selectedResponse, response: updated }); setMessage('تم تصحيح إجابة الفرع وحفظ سجل التعديل.'); }} />}
   </DashboardLayout>;
 };
