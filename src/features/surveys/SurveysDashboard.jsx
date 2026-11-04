@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DashboardLayout from '../../layouts/DashboardLayout';
 import { RESPONSE_STATUS, SURVEY_STATUS, formatMonth, getCurrentMonth, getRecentMonths } from './surveyConstants';
-import { createSurvey, deleteSurveyMonth, deleteSurveyPermanently, getBranches, getResponsesForSurvey, getSurveys, updateSurvey, updateSurveyStatus } from './surveyService';
+import { createSurvey, deleteSurveyMonth, deleteSurveyPermanently, getBranches, getResponsesForSurvey, getSurveys, resetBranchSurveyResponse, updateSurvey, updateSurveyStatus } from './surveyService';
+import { auth } from '../../config/firebase';
 import SurveyEditor from './SurveyEditor';
 import SurveyResponseDetailsModal from './SurveyResponseDetailsModal';
+import InventoryResponseModal from './InventoryResponseModal';
 import SurveyPdfDocument from './SurveyPdfDocument';
 import SurveyFieldPdfDocument from './SurveyFieldPdfDocument';
 import { createSurveyFieldsWorkbook } from './surveyFieldExcel';
+import { createSurveyInventoryWorkbook } from './surveyInventoryExcel';
 import { saveAs } from 'file-saver';
 import { getLatestDueOccurrence, getResponseMonth, getSurveySchedule, listDueOccurrencesInMonth, occurrenceDateOfResponse } from './surveySchedule';
 import './survey.css';
@@ -31,6 +34,7 @@ const SurveysDashboard = () => {
   const [exportFormat, setExportFormat] = useState('pdf');
   const [exportDate, setExportDate] = useState('');
   const [exporting, setExporting] = useState(false);
+  const [resettingResponseId, setResettingResponseId] = useState('');
   const pdfRef = useRef(null);
   const fieldPdfRefs = useRef(new Map());
 
@@ -123,6 +127,37 @@ const SurveysDashboard = () => {
     } catch (error) { setMessage('تعذر حذف إجابات الشهر.'); console.error(error); }
   };
 
+  /**
+   * Reopens one current branch occurrence for a fresh answer.
+   * 1. Confirm the scope and explain retained stock adjustments.
+   * 2. Reset the response with an audit entry.
+   * 3. Update the monitoring view without another collection read.
+   */
+  const resetBranchResponse = async (response, branch) => {
+    // STEP 1: Require explicit confirmation for this branch and date.
+    const date = occurrenceDateOfResponse(response);
+    const notice = selectedSurvey?.kind === 'inventory'
+      ? '\nالفائض الذي أضيف سابقًا إلى الجرد سيبقى في رصيده، وستبدأ إعادة التعبئة من الرصيد الحالي.' : '';
+    if (!window.confirm(`مسح إجابة «${branch.name || branch.id}» لموعد ${date} ليعبئها الفرع من جديد؟${notice}`)) return;
+    try {
+      setResettingResponseId(response.id);
+      // STEP 2: Reset only this response and retain its prior values in the revision log.
+      await resetBranchSurveyResponse({
+        responseId: response.id, surveyId: response.surveyId,
+        branchId: branch.id, userId: auth.currentUser?.uid || null,
+      });
+      // STEP 3: Show the occurrence as pending immediately.
+      setResponses((current) => current.filter((item) => item.id !== response.id));
+      setSelectedResponse(null);
+      setMessage(`تم مسح إجابة ${branch.name || branch.id} لموعد ${date}. يمكن للفرع تعبئتها من جديد.`);
+    } catch (error) {
+      setMessage(error.message || 'تعذر مسح إجابة الفرع.');
+      console.error(error);
+    } finally {
+      setResettingResponseId('');
+    }
+  };
+
   const exportPdf = async () => {
     if (!selectedSurvey || exportBranchIds.length === 0 || !pdfRef.current) return;
     try {
@@ -138,6 +173,19 @@ const SurveysDashboard = () => {
       }).from(pdfRef.current).save();
       setMessage(`تم تصدير ${exportBranchIds.length} فرع في ملف PDF واحد.`);
     } catch (error) { setMessage('تعذر إنشاء ملف PDF.'); console.error(error); }
+    finally { setExporting(false); }
+  };
+
+  const exportInventoryExcel = async () => {
+    if (!selectedSurvey || !selectedExportDate || !exportBranches.length) return;
+    try {
+      setExporting(true);
+      const workbook = await createSurveyInventoryWorkbook({ survey: selectedSurvey, date: selectedExportDate, branches: exportBranches, responses });
+      const buffer = await workbook.xlsx.writeBuffer();
+      const filename = `جرد_${selectedSurvey.title}_${selectedExportDate}.xlsx`.replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
+      saveAs(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), filename);
+      setMessage('تم تصدير إجابات جرد الأصناف إلى Excel.');
+    } catch (error) { setMessage('تعذر تصدير جرد الأصناف.'); console.error(error); }
     finally { setExporting(false); }
   };
 
@@ -198,12 +246,26 @@ const SurveysDashboard = () => {
     <section className="survey-monitor card"><div className="survey-section-heading"><div><h2>متابعة الفروع حسب الشهر</h2><p>اضغط على الشهر لرؤية كل موعد وإجابة الفرع.</p></div>{surveys.length > 0 && <select className="input-field survey-select" value={selectedSurveyId} onChange={(event) => { setSelectedSurveyId(event.target.value); setSelectedResponse(null); setSelectedCell(null); }}><option value="" disabled>اختر الاستبيان</option>{surveys.map((survey) => <option key={survey.id} value={survey.id}>{survey.title}</option>)}</select>}</div>
       {responsesLoading && <p>جاري تحميل الإجابات...</p>}
       {selectedSurvey && <div className="survey-table-wrap"><table className="survey-monitor-table"><thead><tr><th>الفرع</th>{months.map((month) => <th key={month}>{formatMonth(month)}</th>)}</tr></thead><tbody>{visibleBranches.map((branch) => <tr key={branch.id}><td>{branch.name || branch.id}</td>{months.map((month) => { const dates = getCellDates(branch.id, month); const completed = dates.filter((date) => getResponse(branch.id, date)?.status === RESPONSE_STATUS.SUBMITTED).length; const state = dates.length === 0 ? 'not-applicable' : completed === dates.length ? 'submitted' : 'pending'; return <td key={month}>{dates.length ? <button type="button" className={`survey-response-state survey-state-button ${state}`} onClick={() => setSelectedCell({ branch, month })}>{completed} / {dates.length} تم</button> : <span className="survey-response-state not-applicable">—</span>}</td>; })}</tr>)}</tbody></table></div>}
-      {selectedCell && selectedSurvey && <div className="survey-occurrences"><div className="survey-section-heading"><h3>{selectedCell.branch.name || selectedCell.branch.id} · {formatMonth(selectedCell.month)}</h3><button type="button" className="survey-close" onClick={() => setSelectedCell(null)}>×</button></div>{getCellDates(selectedCell.branch.id, selectedCell.month).map((date) => { const response = getResponse(selectedCell.branch.id, date); const state = response?.status || (latestDue && date < latestDue ? 'missed' : 'pending'); return <div className="survey-occurrence-row" key={date}><strong>{date}</strong><span className={`survey-response-state ${state}`}>{response?.status === RESPONSE_STATUS.SUBMITTED ? 'تم الإرسال' : response?.status === RESPONSE_STATUS.DRAFT ? 'مسودة' : state === 'missed' ? 'فات موعده' : 'بانتظار الإجابة'}</span>{response && <button type="button" className="btn survey-secondary" onClick={() => setSelectedResponse({ response, branch: selectedCell.branch })}>عرض التفاصيل</button>}</div>; })}</div>}
+      {selectedCell && selectedSurvey && <div className="survey-occurrences">
+        <div className="survey-section-heading"><h3>{selectedCell.branch.name || selectedCell.branch.id} · {formatMonth(selectedCell.month)}</h3><button type="button" className="survey-close" onClick={() => setSelectedCell(null)}>×</button></div>
+        {getCellDates(selectedCell.branch.id, selectedCell.month).map((date) => {
+          const response = getResponse(selectedCell.branch.id, date);
+          const state = response?.status || (latestDue && date < latestDue ? 'missed' : 'pending');
+          const canReset = response && selectedSurvey.status === SURVEY_STATUS.ACTIVE && date === latestDue &&
+            selectedSurvey.targetBranchIds?.includes(selectedCell.branch.id) &&
+            !selectedSurvey.excludedBranchIds?.includes(selectedCell.branch.id);
+          return <div className="survey-occurrence-row" key={date}>
+            <strong>{date}</strong><span className={`survey-response-state ${state}`}>{response?.status === RESPONSE_STATUS.SUBMITTED ? 'تم الإرسال' : response?.status === RESPONSE_STATUS.DRAFT ? 'مسودة' : state === 'missed' ? 'فات موعده' : 'بانتظار الإجابة'}</span>
+            {response && <button type="button" className="btn survey-secondary" onClick={() => setSelectedResponse({ response, branch: selectedCell.branch })}>عرض التفاصيل</button>}
+            {canReset && <button type="button" className="btn survey-danger" disabled={!!resettingResponseId} onClick={() => resetBranchResponse(response, selectedCell.branch)}>{resettingResponseId === response.id ? 'جاري المسح...' : 'مسح الإجابة لإعادة التعبئة'}</button>}
+          </div>;
+        })}
+      </div>}
     </section>
 
     {selectedSurvey && <section className="survey-monitor card survey-export-panel">
       <h2>تصدير بيانات الاستبيان</h2>
-      <p className="survey-helper">اختر التاريخ والفروع والحقول. في PDF يُنشأ ملف لكل حقل، وفي Excel ملف واحد بتبويب لكل حقل.</p>
+      <p className="survey-helper">{selectedSurvey.kind === 'inventory' ? 'اختر التاريخ والفروع لتصدير إجابات جرد الأصناف.' : 'اختر التاريخ والفروع والحقول. في PDF يُنشأ ملف لكل حقل، وفي Excel ملف واحد بتبويب لكل حقل.'}</p>
       <div className="survey-form-grid">
         <label>الشهر<select className="input-field" value={exportMonth} onChange={(event) => { setExportMonth(event.target.value); setExportQuestionIds([]); setExportDate(''); }}>
           {months.map((month) => <option key={month} value={month}>{formatMonth(month)}</option>)}
@@ -212,12 +274,12 @@ const SurveysDashboard = () => {
           <option value="" disabled>لا توجد مواعيد في هذا الشهر</option>
           {exportDates.map((date) => <option key={date} value={date}>{date}</option>)}
         </select></label>
-        <label>نوع ملف الحقول<select className="input-field" value={exportFormat} onChange={(event) => setExportFormat(event.target.value)}>
+        {selectedSurvey.kind !== 'inventory' && <label>نوع ملف الحقول<select className="input-field" value={exportFormat} onChange={(event) => setExportFormat(event.target.value)}>
           <option value="pdf">PDF</option>
           <option value="excel">Excel (.xlsx)</option>
-        </select></label>
+        </select></label>}
       </div>
-      <fieldset className="survey-export-fields"><legend>حقول التقرير</legend>
+      {selectedSurvey.kind !== 'inventory' && <fieldset className="survey-export-fields"><legend>حقول التقرير</legend>
         <div className="survey-export-fields-header"><span>{selectedExportQuestions.length} من {exportQuestions.length} حقل محدد</span>
           <button type="button" className="survey-text-button" onClick={() => setExportQuestionIds(selectedExportQuestions.length === exportQuestions.length ? [] : exportQuestions.map((question) => question.id))}>
             {selectedExportQuestions.length === exportQuestions.length ? 'إلغاء اختيار الكل' : 'اختيار الكل'}
@@ -227,7 +289,7 @@ const SurveysDashboard = () => {
           <input type="checkbox" checked={exportQuestionIds.includes(question.id)} onChange={() => setExportQuestionIds((current) => current.includes(question.id) ? current.filter((id) => id !== question.id) : [...current, question.id])} />
           {question.label}{question.previous ? ' (حقل سابق)' : ''}
         </label>)}</div>
-      </fieldset>
+      </fieldset>}
       <div className="survey-export-fields-header"><strong>الفروع المختارة: {exportBranches.length}</strong>
         <button type="button" className="survey-text-button" onClick={() => setExportBranchIds(exportBranches.length === branches.length ? [] : branches.map((branch) => branch.id))}>
           {exportBranches.length === branches.length ? 'إلغاء اختيار الكل' : 'اختيار الكل'}
@@ -238,15 +300,15 @@ const SurveysDashboard = () => {
         {branch.name || branch.id}
       </label>)}</div>
       <div className="survey-actions survey-export-actions">
-        <button type="button" className="btn btn-primary" disabled={!selectedExportQuestions.length || !selectedExportDate || !exportBranches.length || exporting || responsesLoading} onClick={exportSelectedFields}>
+        {selectedSurvey.kind === 'inventory' ? <button type="button" className="btn btn-primary" disabled={!selectedExportDate || !exportBranches.length || exporting || responsesLoading} onClick={exportInventoryExcel}>تصدير Excel لجرد الأصناف</button> : <button type="button" className="btn btn-primary" disabled={!selectedExportQuestions.length || !selectedExportDate || !exportBranches.length || exporting || responsesLoading} onClick={exportSelectedFields}>
           {exporting ? 'جاري تجهيز التصدير...' : exportFormat === 'excel' ? `تصدير ملف Excel (${selectedExportQuestions.length} ${selectedExportQuestions.length === 1 ? 'تبويب' : 'تبويبات'})` : `تصدير ${selectedExportQuestions.length} ${selectedExportQuestions.length === 1 ? 'ملف PDF' : 'ملفات PDF'}`}
-        </button>
+        </button>}
         <button type="button" className="btn survey-secondary" disabled={!exportBranches.length || exporting || responsesLoading} onClick={exportPdf}>تصدير التقرير الشامل PDF</button>
         {exportMonth !== getCurrentMonth() && responses.some((response) => getResponseMonth(response) === exportMonth) && <button type="button" className="btn survey-danger" onClick={removeMonth}>حذف إجابات هذا الشهر نهائياً</button>}
       </div>
     </section>}
     {selectedSurvey && exportBranches.length > 0 && <div className="survey-pdf-host" aria-hidden="true"><div ref={pdfRef}><SurveyPdfDocument survey={selectedSurvey} month={exportMonth} branches={exportBranches} responses={responses} /></div>{exportFormat === 'pdf' && selectedExportQuestions.map((question) => <div key={question.id} ref={(node) => { if (node) fieldPdfRefs.current.set(question.id, node); else fieldPdfRefs.current.delete(question.id); }}><SurveyFieldPdfDocument survey={selectedSurvey} question={question} date={selectedExportDate} branches={exportBranches} responses={responses} /></div>)}</div>}
-    {selectedResponse && selectedSurvey && <SurveyResponseDetailsModal key={selectedResponse.response.id} response={selectedResponse.response} branch={selectedResponse.branch} survey={selectedSurvey} onClose={() => setSelectedResponse(null)} onUpdated={(updated) => { setResponses((current) => current.map((item) => item.id === updated.id ? updated : item)); setSelectedResponse({ ...selectedResponse, response: updated }); setMessage('تم تصحيح إجابة الفرع وحفظ سجل التعديل.'); }} />}
+    {selectedResponse && selectedSurvey && (selectedSurvey.kind === 'inventory' ? <InventoryResponseModal key={selectedResponse.response.id} response={selectedResponse.response} branch={selectedResponse.branch} onClose={() => setSelectedResponse(null)} onUpdated={(updated) => { setResponses((current) => current.map((item) => item.id === updated.id ? updated : item)); setSelectedResponse((current) => ({ ...current, response: updated })); setMessage('تم تحديث إجابة الصنف وحفظ سجل التعديل.'); }} /> : <SurveyResponseDetailsModal key={selectedResponse.response.id} response={selectedResponse.response} branch={selectedResponse.branch} survey={selectedSurvey} onClose={() => setSelectedResponse(null)} onUpdated={(updated) => { setResponses((current) => current.map((item) => item.id === updated.id ? updated : item)); setSelectedResponse({ ...selectedResponse, response: updated }); setMessage('تم تصحيح إجابة الفرع وحفظ سجل التعديل.'); }} />)}
   </DashboardLayout>;
 };
 

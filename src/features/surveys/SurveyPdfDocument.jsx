@@ -3,6 +3,9 @@ import { getResponseMonth, getZonedDateTime, listDueOccurrencesInMonth, occurren
 import { formatExpiryDate, isExpiredDate, normalizeExpiryDate } from './surveyDates';
 
 const SurveyPdfAnswers = ({ response, survey, questionId }) => {
+  if ((response.surveySnapshot?.kind || survey.kind) === 'inventory') {
+    return <table className="survey-pdf-workers"><thead><tr><th>الصنف</th><th>رصيد الجرد</th><th>الموجود الفعلي</th><th>الفارق</th><th>الفائض المضاف</th><th>السبب</th><th>تاريخ الجرد</th></tr></thead><tbody>{Object.entries(response.inventoryAnswers || {}).map(([id, answer]) => <tr key={id}><td>{answer.productName}</td><td>{answer.expectedQuantity}</td><td>{answer.actualQuantity ?? '—'}</td><td className={answer.difference < 0 ? 'survey-pdf-alert' : undefined}>{answer.difference ?? '—'}</td><td>{answer.appliedSurplus ?? 0}</td><td>{answer.reason || '—'}</td><td>{answer.referenceDate || '—'}</td></tr>)}</tbody></table>;
+  }
   const questions = response.surveySnapshot?.questions || survey.questions || [];
   const visibleQuestions = questionId ? questions.filter((question) => question.id === questionId) : questions;
   const today = getZonedDateTime().date;

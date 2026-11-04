@@ -6,6 +6,7 @@ import {
   getDoc,
   getDocs,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   Timestamp,
@@ -16,11 +17,19 @@ import {
 import { db } from '../../config/firebase';
 import { RESPONSE_STATUS, SURVEY_STATUS } from './surveyConstants';
 import { cleanSurveyAnswers, validateSurveyAnswers } from './surveyValidation';
-import { getLatestDueOccurrence, getResponseMonth, getScheduleForOccurrence, getSurveySchedule, scheduledDateTime } from './surveySchedule';
+import { getLatestDueOccurrence, getResponseMonth, getScheduleForOccurrence, getSurveySchedule, occurrenceDateOfResponse, scheduledDateTime } from './surveySchedule';
 
 const SURVEYS = 'surveys';
 const RESPONSES = 'surveyResponses';
 const REVISIONS = 'surveyResponseRevisions';
+const surveyCache = { value: null, expiresAt: 0 };
+const responseCache = new Map();
+const CACHE_MS = 60_000;
+
+export const updateCachedSurveyResponse = (response) => {
+  const cached = responseCache.get(response.surveyId);
+  if (cached) cached.value = cached.value.map((item) => item.id === response.id ? response : item);
+};
 
 const responseId = (surveyId, branchId, occurrenceDate) => `${surveyId}__${branchId}__${occurrenceDate}`;
 
@@ -32,14 +41,18 @@ export const getBranches = async () => {
 };
 
 export const getSurveys = async () => {
+  if (surveyCache.value && Date.now() < surveyCache.expiresAt) return surveyCache.value;
   const snapshot = await getDocs(collection(db, SURVEYS));
-  return snapshot.docs
+  surveyCache.value = snapshot.docs
     .map((survey) => ({ id: survey.id, ...survey.data() }))
     .sort((first, second) => (second.createdAt?.seconds || 0) - (first.createdAt?.seconds || 0));
+  surveyCache.expiresAt = Date.now() + CACHE_MS;
+  return surveyCache.value;
 };
 
-export const createSurvey = async ({ title, description, targetBranchIds, questions, schedule }) => {
-  const cleanQuestions = questions.map((question) => ({
+export const createSurvey = async ({ title, description, kind = 'documents', targetBranchIds, questions, schedule }) => {
+  surveyCache.expiresAt = 0;
+  const cleanQuestions = (kind === 'inventory' ? [] : questions).map((question) => ({
     ...question,
     label: question.label.trim(),
   }));
@@ -47,6 +60,8 @@ export const createSurvey = async ({ title, description, targetBranchIds, questi
   return addDoc(collection(db, SURVEYS), {
     title: title.trim(),
     description: description.trim(),
+    kind,
+    ...(kind === 'inventory' ? { inventory: { typeId: '5' } } : {}),
     status: SURVEY_STATUS.ACTIVE,
     startsFrom: schedule.startDate.slice(0, 7),
     schedule,
@@ -60,7 +75,9 @@ export const createSurvey = async ({ title, description, targetBranchIds, questi
 };
 
 export const updateSurvey = async (survey, changes) => {
-  const questions = changes.questions.map((question) => ({ ...question, label: question.label.trim() }));
+  surveyCache.expiresAt = 0;
+  const kind = changes.kind || 'documents';
+  const questions = (kind === 'inventory' ? [] : changes.questions).map((question) => ({ ...question, label: question.label.trim() }));
   const questionsChanged = JSON.stringify(questions) !== JSON.stringify(survey.questions);
   const scheduleChanged = JSON.stringify(changes.schedule) !== JSON.stringify(getSurveySchedule(survey));
   const scheduleHistory = scheduleChanged ? [
@@ -70,17 +87,20 @@ export const updateSurvey = async (survey, changes) => {
   await updateDoc(doc(db, SURVEYS, survey.id), {
     title: changes.title.trim(),
     description: changes.description.trim(),
+    kind,
+    inventory: kind === 'inventory' ? { typeId: '5' } : null,
     targetBranchIds: changes.targetBranchIds,
     questions,
     schedule: changes.schedule,
     scheduleHistory,
     startsFrom: changes.schedule.startDate.slice(0, 7),
-    version: (survey.version || 1) + (questionsChanged || scheduleChanged ? 1 : 0),
+    version: (survey.version || 1) + (questionsChanged || scheduleChanged || kind !== (survey.kind || 'documents') ? 1 : 0),
     updatedAt: serverTimestamp(),
   });
 };
 
 export const updateSurveyStatus = async (surveyId, status) => {
+  surveyCache.expiresAt = 0;
   await updateDoc(doc(db, SURVEYS, surveyId), {
     status,
     updatedAt: serverTimestamp(),
@@ -89,6 +109,7 @@ export const updateSurveyStatus = async (surveyId, status) => {
 };
 
 export const updateSurveyAudience = async (surveyId, targetBranchIds) => {
+  surveyCache.expiresAt = 0;
   await updateDoc(doc(db, SURVEYS, surveyId), {
     targetBranchIds,
     excludedBranchIds: [],
@@ -187,7 +208,96 @@ export const correctSurveyResponse = async ({ response, survey, answers, userId 
     editedAt: serverTimestamp(),
   });
   await batch.commit();
+  responseCache.delete(response.surveyId);
   return cleanedAnswers;
+};
+
+/**
+ * Changes one product answer while preserving the other products and recording the revision.
+ * 1. Read the current branch response in a transaction.
+ * 2. Validate or remove the selected product answer.
+ * 3. Save the response and its audit record atomically.
+ */
+export const changeInventoryProductAnswer = async ({ responseId, productId, actualQuantity, reason, remove = false, userId }) => {
+  const responseReference = doc(db, RESPONSES, responseId);
+  const revisionReference = doc(collection(db, REVISIONS));
+  return runTransaction(db, async (transaction) => {
+    // STEP 1: Use the latest response to avoid overwriting another product correction.
+    const current = await transaction.get(responseReference);
+    if (!current.exists()) throw new Error('لم تعد إجابة الفرع موجودة.');
+    const response = current.data();
+    const previous = response.inventoryAnswers?.[productId];
+    if (!previous) throw new Error('لم تعد إجابة هذا الصنف موجودة.');
+
+    // STEP 2: Keep the daily reference fixed and recalculate the difference.
+    const nextAnswers = { ...response.inventoryAnswers };
+    if (remove) delete nextAnswers[productId];
+    else {
+      const actual = Number(actualQuantity);
+      const expected = Number(previous.expectedQuantity);
+      if (!Number.isFinite(actual) || actual < 0 || !Number.isFinite(expected)) throw new Error('أدخل كمية صحيحة.');
+      const difference = actual - expected;
+      const cleanReason = difference === 0 ? '' : String(reason || '').trim();
+      if (difference !== 0 && !cleanReason) throw new Error('أدخل سبب النقص أو الزيادة.');
+      nextAnswers[productId] = { ...previous, actualQuantity: actual, difference, reason: cleanReason };
+    }
+
+    // STEP 3: Store the scoped change and its audit entry together.
+    transaction.update(responseReference, { inventoryAnswers: nextAnswers, updatedAt: serverTimestamp(), correctedAt: serverTimestamp(), correctedBy: userId });
+    transaction.set(revisionReference, {
+      surveyId: response.surveyId, responseId, branchId: response.branchId,
+      month: response.month || response.occurrenceDate?.slice(0, 7), productId,
+      action: remove ? 'delete_product_answer' : 'correct_product_answer',
+      previousAnswer: previous, newAnswer: nextAnswers[productId] || null,
+      editedBy: userId, editedAt: serverTimestamp(),
+    });
+    responseCache.delete(response.surveyId);
+    return nextAnswers;
+  });
+};
+
+/**
+ * Clears one branch response so the branch can submit the current occurrence again.
+ * 1. Read the response and verify its scope.
+ * 2. Preserve the former answers and applied surplus in the revision log.
+ * 3. Delete only this response and invalidate its cached survey list.
+ */
+export const resetBranchSurveyResponse = async ({ responseId, surveyId, branchId, userId }) => {
+  const responseReference = doc(db, RESPONSES, responseId);
+  const surveyReference = doc(db, SURVEYS, surveyId);
+  const revisionReference = doc(collection(db, REVISIONS));
+  // STEP 1: Check the response currently stored, not the dashboard's cached copy.
+  await runTransaction(db, async (transaction) => {
+    const current = await transaction.get(responseReference);
+    const surveyDocument = await transaction.get(surveyReference);
+    if (!current.exists()) throw new Error('لم تعد إجابة الفرع موجودة.');
+    const response = current.data();
+    if (response.surveyId !== surveyId || response.branchId !== branchId) {
+      throw new Error('إجابة الفرع لا تطابق الاستبيان المحدد.');
+    }
+    const survey = surveyDocument.exists() ? surveyDocument.data() : null;
+    if (!survey || survey.status !== SURVEY_STATUS.ACTIVE ||
+        !survey.targetBranchIds?.includes(branchId) || survey.excludedBranchIds?.includes(branchId) ||
+        getLatestDueOccurrence(survey) !== occurrenceDateOfResponse({ id: responseId, ...response })) {
+      throw new Error('هذا الموعد لم يعد متاحًا للفرع لإعادة التعبئة.');
+    }
+    // STEP 2: Keep an audit trail of the removed answer and its inventory adjustment.
+    transaction.set(revisionReference, {
+      surveyId, responseId, branchId,
+      month: getResponseMonth({ id: responseId, ...response }),
+      action: 'reset_branch_response',
+      previousStatus: response.status,
+      previousAnswers: response.answers || {},
+      previousInventoryAnswers: response.inventoryAnswers || {},
+      appliedSurplusTotal: Object.values(response.inventoryAnswers || {})
+        .reduce((sum, answer) => sum + Number(answer.appliedSurplus || 0), 0),
+      inventoryAdjustmentRetained: true,
+      editedBy: userId, editedAt: serverTimestamp(),
+    });
+    // STEP 3: Removing this one response makes the current occurrence pending again.
+    transaction.delete(responseReference);
+  });
+  responseCache.delete(surveyId);
 };
 
 export const getResponsesByMonth = async (month) => {
@@ -197,8 +307,12 @@ export const getResponsesByMonth = async (month) => {
 };
 
 export const getResponsesForSurvey = async (surveyId) => {
+  const cached = responseCache.get(surveyId);
+  if (cached && Date.now() < cached.expiresAt) return cached.value;
   const snapshot = await getDocs(query(collection(db, RESPONSES), where('surveyId', '==', surveyId)));
-  return snapshot.docs.map((response) => ({ id: response.id, ...response.data() }));
+  const value = snapshot.docs.map((response) => ({ id: response.id, ...response.data() }));
+  responseCache.set(surveyId, { value, expiresAt: Date.now() + CACHE_MS });
+  return value;
 };
 
 const deleteDocuments = async (documents) => {
@@ -210,6 +324,7 @@ const deleteDocuments = async (documents) => {
 };
 
 export const deleteSurveyMonth = async (surveyId, month) => {
+  responseCache.delete(surveyId);
   const responses = await getDocs(query(collection(db, RESPONSES), where('surveyId', '==', surveyId)));
   const revisions = await getDocs(query(collection(db, REVISIONS), where('surveyId', '==', surveyId)));
   const monthResponses = responses.docs.filter((response) => getResponseMonth({ id: response.id, ...response.data() }) === month);
@@ -219,6 +334,8 @@ export const deleteSurveyMonth = async (surveyId, month) => {
 };
 
 export const deleteSurveyPermanently = async (surveyId) => {
+  responseCache.delete(surveyId);
+  surveyCache.expiresAt = 0;
   const responses = await getDocs(query(collection(db, RESPONSES), where('surveyId', '==', surveyId)));
   const revisions = await getDocs(query(collection(db, REVISIONS), where('surveyId', '==', surveyId)));
   await deleteDocuments([...revisions.docs, ...responses.docs]);
