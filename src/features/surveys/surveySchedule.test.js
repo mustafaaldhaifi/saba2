@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getLatestDueOccurrence, getResponseMonth, listDueOccurrencesInMonth, occurrenceDateOfResponse, scheduledDateTime } from './surveySchedule.js';
+import { getExpiredOccurrences, getLatestDueOccurrence, getResponseMonth, listDueOccurrencesInMonth, occurrenceDateOfResponse, scheduledDateTime } from './surveySchedule.js';
 
 const survey = (schedule) => ({ schedule: { timezone: 'Asia/Riyadh', startDate: '2026-10-01', missedPolicy: 'latest_only', ...schedule } });
 
@@ -8,6 +8,21 @@ test('daily occurrence starts at the beginning of its Riyadh date', () => {
   const item = survey({ type: 'daily' });
   assert.equal(getLatestDueOccurrence(item, new Date('2026-10-08T20:59:00Z')), '2026-10-08');
   assert.equal(getLatestDueOccurrence(item, new Date('2026-10-08T21:00:00Z')), '2026-10-09');
+});
+
+test('a configured hour delays the new occurrence in Riyadh', () => {
+  const item = survey({ type: 'daily', startDate: '2026-10-09', startTime: '09:30' });
+  assert.equal(getLatestDueOccurrence(item, new Date('2026-10-09T06:29:00Z')), null);
+  assert.equal(getLatestDueOccurrence(item, new Date('2026-10-09T06:30:00Z')), '2026-10-09');
+  assert.equal(getLatestDueOccurrence(item, new Date('2026-10-10T06:29:00Z')), '2026-10-09');
+  assert.equal(scheduledDateTime('2026-10-09', item.schedule).toISOString(), '2026-10-09T06:30:00.000Z');
+});
+
+test('end-of-day restriction keeps unanswered past dates and ignores submitted dates', () => {
+  const item = survey({ type: 'daily', startDate: '2026-10-09', endOfDay: true });
+  const now = new Date('2026-10-10T21:00:00Z');
+  assert.deepEqual(getExpiredOccurrences(item, [{ occurrenceDate: '2026-10-09', status: 'submitted' }], now), ['2026-10-10']);
+  assert.deepEqual(getExpiredOccurrences(survey({ type: 'daily', endOfDay: false }), [], now), []);
 });
 
 test('weekly schedule follows the chosen ISO weekday', () => {

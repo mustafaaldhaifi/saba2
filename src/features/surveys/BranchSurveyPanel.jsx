@@ -20,7 +20,7 @@ const answersFor = (survey, savedAnswers = {}) => Object.fromEntries(survey.ques
       : { value: '' }),
 ]));
 
-const BranchSurveyPanel = ({ branchId }) => {
+const BranchSurveyPanel = ({ branchId, forcedOccurrence = null, onSubmitted }) => {
   const [surveys, setSurveys] = useState([]);
   const [selectedSurvey, setSelectedSurvey] = useState(null);
   const [answers, setAnswers] = useState({});
@@ -41,7 +41,8 @@ const BranchSurveyPanel = ({ branchId }) => {
     const loadSurveys = async () => {
       try {
         setIsLoading(true);
-        const visibleSurveys = await getVisibleSurveysForBranch(branchId);
+        const visibleSurveys = (forcedOccurrence ? [{ ...forcedOccurrence.survey, occurrenceDate: forcedOccurrence.occurrenceDate }] : await getVisibleSurveysForBranch(branchId))
+          .filter((survey) => survey.kind !== 'inventory');
         const withResponses = await Promise.all(visibleSurveys.map(async (survey) => {
           const response = await getSurveyResponse({ surveyId: survey.id, branchId, occurrenceDate: survey.occurrenceDate, allowLegacy: getScheduleForOccurrence(survey, survey.occurrenceDate).type === 'month_start' });
           return { ...survey, responseStatus: response?.status || null, savedAnswers: response?.answers || {} };
@@ -58,7 +59,7 @@ const BranchSurveyPanel = ({ branchId }) => {
     loadSurveys();
     const refresh = window.setInterval(loadSurveys, 60_000);
     return () => { isMounted = false; window.clearInterval(refresh); };
-  }, [branchId]);
+  }, [branchId, forcedOccurrence]);
 
   const openSurvey = (survey) => {
     setSelectedSurvey(survey);
@@ -90,6 +91,7 @@ const BranchSurveyPanel = ({ branchId }) => {
       setError('');
       await saveSurveyResponse({ survey: selectedSurvey, branchId, userId: auth.currentUser?.uid || null, answers, status });
       setResponseStatus(status);
+      if (status === RESPONSE_STATUS.SUBMITTED) onSubmitted?.();
       setSurveys((current) => current.map((survey) => survey.id === selectedSurvey.id
         ? { ...survey, responseStatus: status, savedAnswers: answers }
         : survey));

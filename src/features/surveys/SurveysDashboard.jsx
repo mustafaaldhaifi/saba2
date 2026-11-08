@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DashboardLayout from '../../layouts/DashboardLayout';
 import { RESPONSE_STATUS, SURVEY_STATUS, formatMonth, getCurrentMonth, getRecentMonths } from './surveyConstants';
-import { createSurvey, deleteSurveyMonth, deleteSurveyPermanently, getBranches, getResponsesForSurvey, getSurveys, resetBranchSurveyResponse, updateSurvey, updateSurveyStatus } from './surveyService';
+import { createSurvey, deleteSurveyMonth, deleteSurveyPermanently, getBranches, getResponsesForSurvey, getSurveyAccessOverrides, getSurveys, grantSurveyAccess, resetBranchSurveyResponse, updateSurvey, updateSurveyStatus } from './surveyService';
 import { auth } from '../../config/firebase';
 import SurveyEditor from './SurveyEditor';
 import SurveyResponseDetailsModal from './SurveyResponseDetailsModal';
@@ -11,11 +11,17 @@ import SurveyFieldPdfDocument from './SurveyFieldPdfDocument';
 import { createSurveyFieldsWorkbook } from './surveyFieldExcel';
 import { createSurveyInventoryWorkbook } from './surveyInventoryExcel';
 import { saveAs } from 'file-saver';
-import { getLatestDueOccurrence, getResponseMonth, getSurveySchedule, listDueOccurrencesInMonth, occurrenceDateOfResponse } from './surveySchedule';
+import { getExpiredOccurrences, getLatestDueOccurrence, getResponseMonth, getSurveySchedule, getZonedDateTime, listDueOccurrencesInMonth, occurrenceDateOfResponse, scheduledDateTime, SURVEY_TIMEZONE } from './surveySchedule';
 import './survey.css';
 
 const statusLabel = { active: 'نشط', paused: 'موقوف', archived: 'مؤرشف' };
 
+/**
+ * Manages survey definitions, responses, and missed-deadline access grants.
+ * 1. Load surveys and branch answers.
+ * 2. Show missed occurrences and allow administrators to reopen one.
+ * 3. Keep the existing answer review and export actions available.
+ */
 const SurveysDashboard = () => {
   const [surveys, setSurveys] = useState([]);
   const [branches, setBranches] = useState([]);
@@ -35,6 +41,12 @@ const SurveysDashboard = () => {
   const [exportDate, setExportDate] = useState('');
   const [exporting, setExporting] = useState(false);
   const [resettingResponseId, setResettingResponseId] = useState('');
+  const [deletingSurveyId, setDeletingSurveyId] = useState('');
+  const [accessOverrides, setAccessOverrides] = useState([]);
+  const [unlockUntil, setUnlockUntil] = useState({});
+  const [grantingBranchId, setGrantingBranchId] = useState('');
+  const [statusTick, setStatusTick] = useState(0);
+  const statusNow = new Date();
   const pdfRef = useRef(null);
   const fieldPdfRefs = useRef(new Map());
 
@@ -79,9 +91,50 @@ const SurveysDashboard = () => {
       .catch((error) => { if (live) setMessage('تعذر تحميل إجابات الاستبيان.'); console.error(error); })
       .finally(() => { if (live) setResponsesLoading(false); });
     return () => { live = false; };
-  }, [selectedSurveyId]);
+  }, [selectedSurveyId, statusTick]);
   useEffect(() => { setExportBranchIds(selectedSurvey?.targetBranchIds || []); }, [selectedSurveyId, selectedSurvey?.targetBranchIds]);
   useEffect(() => { setExportQuestionIds([]); fieldPdfRefs.current.clear(); }, [selectedSurveyId]);
+  useEffect(() => {
+    const timer = window.setInterval(() => setStatusTick((current) => current + 1), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    if (!selectedSurveyId) { setAccessOverrides([]); return undefined; }
+    let active = true;
+    getSurveyAccessOverrides(selectedSurveyId).then((items) => { if (active) setAccessOverrides(items); })
+      .catch((error) => { console.error(error); if (active) setMessage('تعذر تحميل حالات فتح التقييد.'); });
+    return () => { active = false; };
+  }, [selectedSurveyId, statusTick]);
+
+  const restrictedBranches = selectedSurvey ? branches.flatMap((branch) => {
+    if (!selectedSurvey.targetBranchIds?.includes(branch.id) || selectedSurvey.excludedBranchIds?.includes(branch.id)) return [];
+    const missed = getExpiredOccurrences(selectedSurvey, responses.filter((response) => response.branchId === branch.id), statusNow);
+    if (!missed.length) return [];
+    const occurrenceDate = missed[0];
+    const grant = accessOverrides.find((item) => item.branchId === branch.id && item.occurrenceDate === occurrenceDate);
+    return [{ branch, occurrenceDate, reopened: !!grant?.expiresAt?.toDate && grant.expiresAt.toDate() > statusNow }];
+  }) : [];
+
+  /**
+   * Reopens one missed occurrence until an administrator-selected Riyadh time.
+   * 1. Convert the chosen local date and time to an instant.
+   * 2. Save and refresh the grant, then report the new deadline.
+   */
+  const reopenSurvey = async (item) => {
+    try {
+      // STEP 1: Interpret the input in the survey's stated timezone.
+      setGrantingBranchId(item.branch.id);
+      const fallback = `${getZonedDateTime(new Date(Date.now() + 86_400_000)).date}T23:59`;
+      const [date, time] = (unlockUntil[item.branch.id] || fallback).split('T');
+      const expiresAt = scheduledDateTime(date, { timezone: SURVEY_TIMEZONE, startTime: time });
+      // STEP 2: Update only this branch and occurrence's grant.
+      await grantSurveyAccess({ surveyId: selectedSurvey.id, branchId: item.branch.id,
+        occurrenceDate: item.occurrenceDate, expiresAt, userId: auth.currentUser?.uid || null });
+      setAccessOverrides(await getSurveyAccessOverrides(selectedSurvey.id));
+      setMessage(`تم فتح التقييد لفرع ${item.branch.name || item.branch.id} حتى ${date} ${time} بتوقيت الرياض.`);
+    } catch (error) { setMessage(error.message || 'تعذر فتح التقييد.'); console.error(error); }
+    finally { setGrantingBranchId(''); }
+  };
 
   const saveSurvey = async (form) => {
     try {
@@ -103,16 +156,30 @@ const SurveysDashboard = () => {
     } catch (error) { setMessage('تعذر تغيير الحالة.'); console.error(error); }
   };
 
+  /**
+   * Deletes a survey and its saved answers after confirming the full scope.
+   * 1. Count linked answers and explain any retained inventory adjustments.
+   * 2. Delete the survey, answers, and answer revisions.
+   * 3. Reload the list and clear the selected response.
+   */
   const removeSurvey = async (survey) => {
-    const linkedResponses = await getResponsesForSurvey(survey.id);
-    const monthsCount = new Set(linkedResponses.map(getResponseMonth).filter(Boolean)).size;
-    if (!window.confirm(`حذف نهائي لاستبيان «${survey.title}» و${linkedResponses.length} إجابة من ${monthsCount} شهر؟ لا يمكن التراجع.`)) return;
     try {
+      // STEP 1: Show the exact scope before the irreversible action.
+      setDeletingSurveyId(survey.id);
+      const linkedResponses = await getResponsesForSurvey(survey.id);
+      const monthsCount = new Set(linkedResponses.map(getResponseMonth).filter(Boolean)).size;
+      const inventoryNote = survey.kind === 'inventory' ? '\nالأرصدة التي طُبّق عليها فائض سابقًا لن تعود تلقائيًا؛ فهي جزء من الجرد اليومي.' : '';
+      if (!window.confirm(`حذف نهائي لاستبيان «${survey.title}» و${linkedResponses.length} إجابة من ${monthsCount} شهر، مع سجلات تصحيح الإجابات؟ لا يمكن التراجع.${inventoryNote}`)) return;
+      // STEP 2: Remove the survey's own documents.
       const count = await deleteSurveyPermanently(survey.id);
       setMessage(`تم حذف الاستبيان و${count} إجابة وسجلات تصحيحها.`);
+      // STEP 3: Drop stale details and load the remaining surveys.
       setResponses([]);
+      setSelectedResponse(null);
+      setSelectedCell(null);
       await loadSurveys();
     } catch (error) { setMessage('تعذر إكمال الحذف. تحقق من صلاحيات Firestore وأعد المحاولة.'); console.error(error); }
+    finally { setDeletingSurveyId(''); }
   };
 
   const removeMonth = async () => {
@@ -239,11 +306,16 @@ const SurveysDashboard = () => {
     {editorSurvey !== undefined && <SurveyEditor key={editorSurvey?.id || 'new'} survey={editorSurvey} branches={branches} onSave={saveSurvey} onCancel={() => setEditorSurvey(undefined)} saving={isSaving} />}
 
     <section className="survey-list-section"><h2>الاستبيانات</h2>{isLoading ? <p>جاري التحميل...</p> : surveys.length === 0 ? <div className="card">لا توجد استبيانات بعد.</div> : <div className="survey-admin-list">{surveys.map((survey) => <article className="survey-admin-item card" key={survey.id}>
-      <div><h3>{survey.title}</h3><p>{survey.description || 'بدون وصف'}</p><small>{survey.targetBranchIds?.length || 0} فرع · {({ daily: 'يومي', weekly: 'أسبوعي', month_start: 'بداية الشهر', month_end: 'نهاية الشهر' })[getSurveySchedule(survey).type]} · يبدأ {getSurveySchedule(survey).startDate}</small></div>
-      <div className="survey-admin-actions"><span className={`survey-response-state ${survey.status}`}>{statusLabel[survey.status]}</span><button type="button" className="btn survey-secondary" onClick={() => setEditorSurvey(survey)}>تعديل</button>{survey.status === SURVEY_STATUS.ACTIVE ? <button type="button" className="btn survey-secondary" onClick={() => changeStatus(survey, SURVEY_STATUS.PAUSED)}>إيقاف</button> : <button type="button" className="btn survey-secondary" onClick={() => changeStatus(survey, SURVEY_STATUS.ACTIVE)}>تشغيل</button>}{survey.status !== SURVEY_STATUS.ARCHIVED && <button type="button" className="btn survey-secondary" onClick={() => changeStatus(survey, SURVEY_STATUS.ARCHIVED)}>أرشفة</button>}{survey.status === SURVEY_STATUS.ARCHIVED && <button type="button" className="btn survey-danger" onClick={() => removeSurvey(survey)}>حذف نهائي</button>}</div>
+      <div><h3>{survey.title}</h3><p>{survey.description || 'بدون وصف'}</p><small>{survey.targetBranchIds?.length || 0} فرع · {({ daily: 'يومي', weekly: 'أسبوعي', month_start: 'بداية الشهر', month_end: 'نهاية الشهر' })[getSurveySchedule(survey).type]} · يبدأ {getSurveySchedule(survey).startDate} · {getSurveySchedule(survey).startTime && getSurveySchedule(survey).startTime !== '00:00' ? `الساعة ${getSurveySchedule(survey).startTime}` : 'بداية اليوم'}</small></div>
+      <div className="survey-admin-actions"><span className={`survey-response-state ${survey.status}`}>{statusLabel[survey.status]}</span><button type="button" className="btn survey-secondary" onClick={() => setEditorSurvey(survey)}>تعديل</button>{survey.status === SURVEY_STATUS.ACTIVE ? <button type="button" className="btn survey-secondary" onClick={() => changeStatus(survey, SURVEY_STATUS.PAUSED)}>إيقاف</button> : <button type="button" className="btn survey-secondary" onClick={() => changeStatus(survey, SURVEY_STATUS.ACTIVE)}>تشغيل</button>}{survey.status !== SURVEY_STATUS.ARCHIVED && <button type="button" className="btn survey-secondary" onClick={() => changeStatus(survey, SURVEY_STATUS.ARCHIVED)}>أرشفة</button>}<button type="button" className="btn survey-danger" disabled={!!deletingSurveyId} onClick={() => removeSurvey(survey)}>{deletingSurveyId === survey.id ? 'جاري الحذف...' : 'حذف الاستبيان'}</button></div>
     </article>)}</div>}</section>
 
     <section className="survey-monitor card"><div className="survey-section-heading"><div><h2>متابعة الفروع حسب الشهر</h2><p>اضغط على الشهر لرؤية كل موعد وإجابة الفرع.</p></div>{surveys.length > 0 && <select className="input-field survey-select" value={selectedSurveyId} onChange={(event) => { setSelectedSurveyId(event.target.value); setSelectedResponse(null); setSelectedCell(null); }}><option value="" disabled>اختر الاستبيان</option>{surveys.map((survey) => <option key={survey.id} value={survey.id}>{survey.title}</option>)}</select>}</div>
+      {!responsesLoading && restrictedBranches.length > 0 && <div className="survey-restrictions"><h3>الفروع المقيّدة لهذا الاستبيان</h3>{restrictedBranches.map((item) => <div className="survey-restriction-row" key={item.branch.id}>
+        <strong>{item.branch.name || item.branch.id}</strong><span>موعد {item.occurrenceDate} · {item.reopened ? 'مفتوح للتعبئة' : 'مقيّد'}</span>
+        <label>فتح حتى (بتوقيت الرياض)<input className="input-field" type="datetime-local" value={unlockUntil[item.branch.id] || `${getZonedDateTime(new Date(Date.now() + 86_400_000)).date}T23:59`} onChange={(event) => setUnlockUntil((current) => ({ ...current, [item.branch.id]: event.target.value }))} /></label>
+        <button type="button" className="btn survey-secondary" disabled={!!grantingBranchId} onClick={() => reopenSurvey(item)}>{grantingBranchId === item.branch.id ? 'جارٍ الفتح...' : item.reopened ? 'تجديد المهلة' : 'فتح التقييد'}</button>
+      </div>)}</div>}
       {responsesLoading && <p>جاري تحميل الإجابات...</p>}
       {selectedSurvey && <div className="survey-table-wrap"><table className="survey-monitor-table"><thead><tr><th>الفرع</th>{months.map((month) => <th key={month}>{formatMonth(month)}</th>)}</tr></thead><tbody>{visibleBranches.map((branch) => <tr key={branch.id}><td>{branch.name || branch.id}</td>{months.map((month) => { const dates = getCellDates(branch.id, month); const completed = dates.filter((date) => getResponse(branch.id, date)?.status === RESPONSE_STATUS.SUBMITTED).length; const state = dates.length === 0 ? 'not-applicable' : completed === dates.length ? 'submitted' : 'pending'; return <td key={month}>{dates.length ? <button type="button" className={`survey-response-state survey-state-button ${state}`} onClick={() => setSelectedCell({ branch, month })}>{completed} / {dates.length} تم</button> : <span className="survey-response-state not-applicable">—</span>}</td>; })}</tr>)}</tbody></table></div>}
       {selectedCell && selectedSurvey && <div className="survey-occurrences">

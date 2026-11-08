@@ -4,7 +4,13 @@ import { collection, query, where, getDocs, doc, getDoc } from "firebase/firesto
 import { db, auth } from '../../config/firebase'; // Ensure path is correct
 import { onAuthStateChanged } from "firebase/auth";
 import BranchSurveyPanel from '../surveys/BranchSurveyPanel';
+import { getBranchSurveyRestriction } from '../surveys/surveyService';
 
+/**
+ * Shows branch operations only while no expired survey blocks the account.
+ * 1. Resolve the branch and periodically read missed survey deadlines.
+ * 2. Show the restricted state or reopened survey before normal branch controls.
+ */
 const BranchDashboard = () => {
     const [selectedOrderType, setSelectedOrderType] = useState('');
     const [orderTypes, setOrderTypes] = useState([]);
@@ -12,6 +18,32 @@ const BranchDashboard = () => {
     const [loadingProducts, setLoadingProducts] = useState(false);
     const [branchData, setBranchData] = useState(null);
     const [loadingData, setLoadingData] = useState(true);
+    const [surveyRestriction, setSurveyRestriction] = useState(undefined);
+
+    /** Refreshes the missed-survey gate when the branch submits or an administrator reopens it. */
+    const refreshSurveyRestriction = async () => {
+        if (!branchData?.id) return;
+        setSurveyRestriction(await getBranchSurveyRestriction(branchData.id));
+    };
+
+    useEffect(() => {
+        if (!branchData?.id) return undefined;
+        let active = true;
+        const refresh = async () => {
+            try {
+                const restriction = await getBranchSurveyRestriction(branchData.id);
+                if (active) setSurveyRestriction((current) => current?.survey?.id === restriction?.survey?.id &&
+                    current?.occurrenceDate === restriction?.occurrenceDate && current?.reopened === restriction?.reopened
+                    ? current : restriction);
+            } catch (error) {
+                console.error('Unable to verify survey restriction:', error);
+                if (active) setSurveyRestriction({ blocked: true, verificationFailed: true });
+            }
+        };
+        refresh();
+        const timer = window.setInterval(refresh, 60_000);
+        return () => { active = false; window.clearInterval(timer); };
+    }, [branchData?.id]);
 
     // 1. Fetch Branch Data and Order Types on Mount
     useEffect(() => {
@@ -185,6 +217,16 @@ const BranchDashboard = () => {
         fetchProducts();
     }, [selectedOrderType, branchData]);
 
+    if (branchData?.id && surveyRestriction === undefined) {
+        return <DashboardLayout title="نظرة عامة على الفرع" role="branch"><div className="card">جارٍ التحقق من مواعيد الاستبيانات...</div></DashboardLayout>;
+    }
+    if (surveyRestriction) {
+        return <DashboardLayout title="الاستبيان المطلوب" role="branch">
+            {surveyRestriction.reopened && surveyRestriction.survey.kind !== 'inventory'
+                ? <><div className="card">تم فتح التقييد لتعبئة استبيان «{surveyRestriction.survey.title}» لموعد {surveyRestriction.occurrenceDate}. أرسل الإجابة لاستعادة دخول صفحة الفرع.</div><BranchSurveyPanel branchId={branchData.id} forcedOccurrence={surveyRestriction} onSubmitted={refreshSurveyRestriction} /></>
+                : <div className="card" role="alert">{surveyRestriction.reopened ? `تم فتح التقييد لاستبيان «${surveyRestriction.survey.title}». أكمل جرد الأصناف في صفحة جرد الفرع المخصصة.` : `تم تقييد حسابك لعدم الالتزام بمواعيد الإدخال.${surveyRestriction.verificationFailed ? ' تعذر التحقق من الحالة الآن؛ حاول تحديث الصفحة.' : ` الاستبيان المطلوب: ${surveyRestriction.survey.title}، موعد ${surveyRestriction.occurrenceDate}. تواصل مع الإدارة لفتح التقييد.`}`}</div>}
+        </DashboardLayout>;
+    }
     return (
         <DashboardLayout title="نظرة عامة على الفرع" role="branch">
 

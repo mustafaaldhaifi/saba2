@@ -78,6 +78,11 @@
 .survey-availability-choice { display: grid; gap: .35rem; }
 .survey-missing-note { align-self: center; margin: 0; color: #b91c1c; font-weight: 700; }
 .survey-admin-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.survey-restrictions { margin: 1rem 0; padding: 1rem; border: 1px solid #fecaca; border-radius: var(--radius-md); background: #fffafa; }
+.survey-restrictions h3 { margin-bottom: .8rem; }
+.survey-restriction-row { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem; padding: .7rem 0; border-top: 1px solid #fee2e2; }
+.survey-restriction-row label { display: grid; gap: .2rem; font-size: .8rem; }
+.survey-restriction-row .input-field { min-width: 220px; }
 .survey-danger { background: #fef2f2; color: #b91c1c; }
 .survey-pdf-host { position: fixed; left: -20000px; top: 0; width: 720px; pointer-events: none; }
 .survey-pdf { width: 720px; background: #fff; color: #1e293b; font-family: Tahoma, Arial, sans-serif; font-size: 11px; line-height: 1.35; }

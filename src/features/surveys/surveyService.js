@@ -14,14 +14,15 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
-import { db } from '../../config/firebase';
+import { auth, db } from '../../config/firebase';
 import { RESPONSE_STATUS, SURVEY_STATUS } from './surveyConstants';
 import { cleanSurveyAnswers, validateSurveyAnswers } from './surveyValidation';
-import { getLatestDueOccurrence, getResponseMonth, getScheduleForOccurrence, getSurveySchedule, occurrenceDateOfResponse, scheduledDateTime } from './surveySchedule';
+import { getExpiredOccurrences, getLatestDueOccurrence, getResponseMonth, getScheduleForOccurrence, getSurveySchedule, getZonedDateTime, occurrenceDateOfResponse, scheduledDateTime } from './surveySchedule';
 
 const SURVEYS = 'surveys';
 const RESPONSES = 'surveyResponses';
 const REVISIONS = 'surveyResponseRevisions';
+const ACCESS_OVERRIDES = 'surveyAccessOverrides';
 const surveyCache = { value: null, expiresAt: 0 };
 const responseCache = new Map();
 const CACHE_MS = 60_000;
@@ -32,6 +33,64 @@ export const updateCachedSurveyResponse = (response) => {
 };
 
 const responseId = (surveyId, branchId, occurrenceDate) => `${surveyId}__${branchId}__${occurrenceDate}`;
+const overrideId = responseId;
+
+export const getSurveyAccessOverrides = async (surveyId) => {
+  const snapshot = await getDocs(query(collection(db, ACCESS_OVERRIDES), where('surveyId', '==', surveyId)));
+  return snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+};
+
+/**
+ * Reopens one expired survey occurrence for an administrator-selected period.
+ * 1. Verify the administrator, target branch, expired date, and absence of submission.
+ * 2. Save a grant scoped to the survey, branch, and occurrence.
+ */
+export const grantSurveyAccess = async ({ surveyId, branchId, occurrenceDate, expiresAt, userId }) => {
+  // STEP 1: Reject a grant for another account, active date, or completed answer.
+  if (auth.currentUser?.email?.toLowerCase() !== 'admin@saba321.com') throw new Error('فتح التقييد متاح للإدارة فقط.');
+  if (!(expiresAt instanceof Date) || expiresAt <= new Date()) throw new Error('اختر موعد انتهاء جديدًا في المستقبل.');
+  const surveyDocument = await getDoc(doc(db, SURVEYS, surveyId));
+  if (!surveyDocument.exists() || surveyDocument.data().status !== SURVEY_STATUS.ACTIVE ||
+      !surveyDocument.data().targetBranchIds?.includes(branchId) ||
+      !getExpiredOccurrences(surveyDocument.data(), [], new Date()).includes(occurrenceDate)) {
+    throw new Error('هذا الموعد غير متاح لفتح التقييد. حدّث الصفحة.');
+  }
+  if ((await getDoc(doc(db, RESPONSES, responseId(surveyId, branchId, occurrenceDate)))).data()?.status === RESPONSE_STATUS.SUBMITTED) {
+    throw new Error('الفرع أرسل هذا الموعد بالفعل.');
+  }
+  // STEP 2: Use a stable document ID so extending a grant updates the same occurrence.
+  await setDoc(doc(db, ACCESS_OVERRIDES, overrideId(surveyId, branchId, occurrenceDate)), {
+    surveyId, branchId, occurrenceDate, expiresAt: Timestamp.fromDate(expiresAt),
+    grantedAt: serverTimestamp(), grantedBy: userId,
+  });
+};
+
+/**
+ * Resolves the oldest missed survey for a branch and whether administration reopened it.
+ * 1. Read the branch's active surveys, answers, and access grants.
+ * 2. Find the earliest unanswered date after its end-of-day deadline.
+ */
+export const getBranchSurveyRestriction = async (branchId) => {
+  // STEP 1: Read current documents rather than cached survey or response lists.
+  const [surveys, responses, overrides] = await Promise.all([
+    getDocs(query(collection(db, SURVEYS), where('status', '==', SURVEY_STATUS.ACTIVE))),
+    getDocs(query(collection(db, RESPONSES), where('branchId', '==', branchId))),
+    getDocs(query(collection(db, ACCESS_OVERRIDES), where('branchId', '==', branchId))),
+  ]);
+  const answers = responses.docs.map((item) => ({ id: item.id, ...item.data() }));
+  const grants = overrides.docs.map((item) => item.data());
+  // STEP 2: A live grant opens only its named occurrence, not the branch dashboard.
+  const missed = surveys.docs.flatMap((item) => {
+    const survey = { id: item.id, ...item.data() };
+    if (!survey.targetBranchIds?.includes(branchId) || survey.excludedBranchIds?.includes(branchId)) return [];
+    return getExpiredOccurrences(survey, answers.filter((answer) => answer.surveyId === survey.id))
+      .map((occurrenceDate) => ({ survey, occurrenceDate }));
+  }).sort((left, right) => left.occurrenceDate.localeCompare(right.occurrenceDate));
+  const first = missed[0];
+  if (!first) return null;
+  const grant = grants.find((item) => item.surveyId === first.survey.id && item.occurrenceDate === first.occurrenceDate);
+  return { ...first, reopened: !!grant?.expiresAt?.toDate && grant.expiresAt.toDate() > new Date() };
+};
 
 export const getBranches = async () => {
   const snapshot = await getDocs(collection(db, 'branches'));
@@ -138,10 +197,32 @@ export const getSurveyResponse = async ({ surveyId, branchId, occurrenceDate, al
   return null;
 };
 
+/**
+ * Saves the selected response only while its occurrence is open to this branch.
+ * 1. Re-read the survey and check its current or administrator-reopened deadline.
+ * 2. Validate submitted answers and save the response under its stable ID.
+ */
 export const saveSurveyResponse = async ({ survey, branchId, userId, answers, status }) => {
+  // STEP 1: The branch must still be targeted and within the permitted period.
   const occurrenceDate = survey.occurrenceDate || getLatestDueOccurrence(survey);
   if (!occurrenceDate) throw new Error('لم يحِن موعد هذا الاستبيان بعد.');
-  if (occurrenceDate !== getLatestDueOccurrence(survey)) throw new Error('بدأ موعد جديد للاستبيان. حدّث الصفحة وأكمل الموعد الحالي.');
+  const currentSurvey = await getDoc(doc(db, SURVEYS, survey.id));
+  if (!currentSurvey.exists() || currentSurvey.data().status !== SURVEY_STATUS.ACTIVE ||
+      !currentSurvey.data().targetBranchIds?.includes(branchId) || currentSurvey.data().excludedBranchIds?.includes(branchId)) {
+    throw new Error('لم يعد هذا الاستبيان متاحًا لهذا الفرع.');
+  }
+  const liveSurvey = { id: survey.id, ...currentSurvey.data() };
+  if (liveSurvey.kind === 'inventory') throw new Error('استبيان الجرد يُرسل من صفحة جرد الفرع المخصصة.');
+  const liveSchedule = getScheduleForOccurrence(liveSurvey, occurrenceDate);
+  const expired = liveSchedule.endOfDay && occurrenceDate < getZonedDateTime(new Date(), liveSchedule.timezone).date;
+  if (expired) {
+    const grant = await getDoc(doc(db, ACCESS_OVERRIDES, overrideId(survey.id, branchId, occurrenceDate)));
+    if (!grant.exists() || !grant.data().expiresAt?.toDate || grant.data().expiresAt.toDate() <= new Date()) {
+      throw new Error('انتهت مهلة الإدخال. تم تقييد حسابك لعدم الالتزام بمواعيد الإدخال.');
+    }
+  } else if (occurrenceDate !== getLatestDueOccurrence(liveSurvey)) {
+    throw new Error('بدأ موعد جديد للاستبيان. حدّث الصفحة وأكمل الموعد الحالي.');
+  }
   const month = occurrenceDate.slice(0, 7);
   const reference = doc(db, RESPONSES, responseId(survey.id, branchId, survey.schedule ? occurrenceDate : month));
   const existingResponse = await getDoc(reference);
@@ -150,6 +231,7 @@ export const saveSurveyResponse = async ({ survey, branchId, userId, answers, st
   }
   const cleanedAnswers = cleanSurveyAnswers(survey.questions, answers);
   if (status === RESPONSE_STATUS.SUBMITTED) {
+    // STEP 2: A submitted answer must meet the survey's validation rules.
     const error = validateSurveyAnswers(survey.questions, cleanedAnswers);
     if (error) throw new Error(error);
   }
@@ -327,9 +409,11 @@ export const deleteSurveyMonth = async (surveyId, month) => {
   responseCache.delete(surveyId);
   const responses = await getDocs(query(collection(db, RESPONSES), where('surveyId', '==', surveyId)));
   const revisions = await getDocs(query(collection(db, REVISIONS), where('surveyId', '==', surveyId)));
+  const grants = await getDocs(query(collection(db, ACCESS_OVERRIDES), where('surveyId', '==', surveyId)));
   const monthResponses = responses.docs.filter((response) => getResponseMonth({ id: response.id, ...response.data() }) === month);
   const monthRevisions = revisions.docs.filter((revision) => revision.data().month === month);
-  await deleteDocuments([...monthRevisions, ...monthResponses]);
+  await deleteDocuments([...monthRevisions, ...monthResponses,
+    ...grants.docs.filter((grant) => grant.data().occurrenceDate?.slice(0, 7) === month)]);
   return monthResponses.length;
 };
 
@@ -338,7 +422,8 @@ export const deleteSurveyPermanently = async (surveyId) => {
   surveyCache.expiresAt = 0;
   const responses = await getDocs(query(collection(db, RESPONSES), where('surveyId', '==', surveyId)));
   const revisions = await getDocs(query(collection(db, REVISIONS), where('surveyId', '==', surveyId)));
-  await deleteDocuments([...revisions.docs, ...responses.docs]);
+  const grants = await getDocs(query(collection(db, ACCESS_OVERRIDES), where('surveyId', '==', surveyId)));
+  await deleteDocuments([...revisions.docs, ...responses.docs, ...grants.docs]);
   await deleteDoc(doc(db, SURVEYS, surveyId));
   return responses.size;
 };
