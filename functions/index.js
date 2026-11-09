@@ -95,6 +95,7 @@ exports.manageBranch = onCall({ region: 'asia-east1', maxInstances: 10 }, async 
     // STEP 2: Create Auth first, and roll it back if the branch document cannot be saved.
     const name = cleanName(request.data.name);
     const city = cleanCity(request.data.city);
+    const hideDailyStockColumns = request.data.hideDailyStockColumns === true;
     const loginName = loginNameFromBranchName(name);
     const password = request.data.password;
     if (typeof password !== 'string' || password.length < 8 || password.length > 128) {
@@ -111,7 +112,7 @@ exports.manageBranch = onCall({ region: 'asia-east1', maxInstances: 10 }, async 
     }
     try {
       const reference = database.collection('branches').doc();
-      await reference.set({ name, loginName, city, authUid: user.uid, status: 'active',
+      await reference.set({ name, loginName, city, hideDailyStockColumns, authUid: user.uid, status: 'active',
         createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
       return { id: reference.id, email };
     } catch (error) {
@@ -130,9 +131,12 @@ exports.manageBranch = onCall({ region: 'asia-east1', maxInstances: 10 }, async 
     // STEP 2: The account key and document ID remain stable when display details change.
     const name = cleanName(request.data.name);
     const city = cleanCity(request.data.city);
+    // NOTE: Older admin clients omit this field; preserve the stored preference.
+    const hideDailyStockColumns = typeof request.data.hideDailyStockColumns === 'boolean'
+      ? request.data.hideDailyStockColumns : branch.hideDailyStockColumns === true;
     const loginName = cleanLoginName(branch.loginName || branch.name);
     await assertUniqueBranch(database, name, loginName, id);
-    await reference.update({ name, loginName, city, updatedAt: FieldValue.serverTimestamp() });
+    await reference.update({ name, loginName, city, hideDailyStockColumns, updatedAt: FieldValue.serverTimestamp() });
     return { id };
   }
 

@@ -3,7 +3,7 @@ import DashboardLayout from '../../layouts/DashboardLayout';
 import { loadBranches, saveBranchChange } from './branchesService';
 import './branches.css';
 
-const blankForm = { name: '', city: 'ryad', password: '' };
+const blankForm = { name: '', city: 'ryad', password: '', hideDailyStockColumns: false };
 
 /**
  * Manages branch records and their login accounts from the administration page.
@@ -35,7 +35,8 @@ const BranchesManager = () => {
 
   const startEdit = (branch) => {
     setEditingId(branch.id);
-    setForm({ name: branch.name || '', city: branch.city || 'ryad', password: '' });
+    setForm({ name: branch.name || '', city: branch.city || 'ryad', password: '',
+      hideDailyStockColumns: branch.hideDailyStockColumns === true });
     setError('');
     setMessage('');
   };
@@ -95,11 +96,12 @@ const BranchesManager = () => {
         <div className="branches-fields">
           <label>اسم الفرع<input className="input-field" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required minLength="2" maxLength="80" /><small>{editingId ? 'يبقى حساب الدخول الحالي ثابتًا عند تعديل الاسم.' : 'سيُنشئ النظام حساب الدخول تلقائيًا من اسم الفرع.'}</small></label>
           <label>المدينة<select className="input-field" value={form.city} onChange={(event) => setForm({ ...form, city: event.target.value })}><option value="ryad">الرياض</option><option value="other">خارج الرياض</option></select></label>
+          <label className="branches-toggle"><input type="checkbox" checked={form.hideDailyStockColumns} onChange={(event) => setForm({ ...form, hideDailyStockColumns: event.target.checked })} /><span>إخفاء عمودَي الموجودة والمتبقي من الجرد اليومي للفرع</span><small>يبقى العمودان ظاهرين مؤقتًا حتى يُحفظ الرصيد الافتتاحي لكل صنف. تبقى أرقام الإدارة وحسابات الجرد كما هي.</small></label>
           {!editingId && <label>كلمة المرور الأولية<input className="input-field" type="password" minLength="8" autoComplete="new-password" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} required /></label>}
         </div>
         <div className="branches-actions"><button className="btn btn-primary" disabled={saving}>{saving ? 'جارٍ الحفظ...' : editingId ? 'حفظ التعديل' : 'إضافة الفرع'}</button>{editingId && <button type="button" className="btn" disabled={saving} onClick={() => { setEditingId(''); setForm(blankForm); }}>إلغاء التعديل</button>}</div>
       </form>
-      <section className="card branches-list"><h2>الفروع الحالية</h2>{loading ? <p>جارٍ تحميل الفروع...</p> : branches.length === 0 ? <p>لا توجد فروع.</p> : <div className="branches-table-wrap"><table><thead><tr><th>الفرع</th><th>رمز الدخول</th><th>المدينة</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody>{branches.map((branch) => <tr key={branch.id}><td>{branch.name || branch.id}</td><td dir="ltr">{branch.loginName || branch.name}</td><td>{branch.city === 'other' ? 'خارج الرياض' : 'الرياض'}</td><td>{branch.status === 'archived' ? 'مؤرشف' : 'نشط'}</td><td><div className="branches-actions"><button type="button" className="btn" disabled={saving} onClick={() => startEdit(branch)}>تعديل</button>{branch.status !== 'archived' && <button type="button" className="btn branches-delete" disabled={saving} onClick={() => remove(branch)}>حذف</button>}</div></td></tr>)}</tbody></table></div>}</section>
+      <section className="card branches-list"><h2>الفروع الحالية</h2>{loading ? <p>جارٍ تحميل الفروع...</p> : branches.length === 0 ? <p>لا توجد فروع.</p> : <div className="branches-table-wrap"><table><thead><tr><th>الفرع</th><th>رمز الدخول</th><th>المدينة</th><th>أعمدة المخزون</th><th>الحالة</th><th>الإجراءات</th></tr></thead><tbody>{branches.map((branch) => <tr key={branch.id}><td>{branch.name || branch.id}</td><td dir="ltr">{branch.loginName || branch.name}</td><td>{branch.city === 'other' ? 'خارج الرياض' : 'الرياض'}</td><td>{branch.hideDailyStockColumns === true ? 'مخفية للفرع' : 'ظاهرة'}</td><td>{branch.status === 'archived' ? 'مؤرشف' : 'نشط'}</td><td><div className="branches-actions"><button type="button" className="btn" disabled={saving} onClick={() => startEdit(branch)}>تعديل</button>{branch.status !== 'archived' && <button type="button" className="btn branches-delete" disabled={saving} onClick={() => remove(branch)}>حذف</button>}</div></td></tr>)}</tbody></table></div>}</section>
     </div>
   </DashboardLayout>;
 };

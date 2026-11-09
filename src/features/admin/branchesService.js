@@ -27,6 +27,7 @@ export const saveBranchChange = async (action, values) => {
   if (action !== 'create' && !values.id) throw new Error('معرّف الفرع مفقود. حدّث الصفحة.');
   // STEP 2: Account changes stay on the server; the browser never receives Admin SDK credentials.
   const result = await manageBranch({ action, id: values.id, name,
-    city: values.city, password: action === 'create' ? values.password : undefined });
+    city: values.city, hideDailyStockColumns: values.hideDailyStockColumns === true,
+    password: action === 'create' ? values.password : undefined });
   return result.data;
 };
