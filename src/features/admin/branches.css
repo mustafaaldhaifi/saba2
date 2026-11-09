@@ -1,0 +1,18 @@
+.branches-page { display: grid; gap: 1.25rem; }
+.branches-page h1, .branches-page h2 { margin: 0 0 .5rem; }
+.branches-page header p { margin: 0; color: #64748b; }
+.branches-form, .branches-list { padding: 1.25rem; }
+.branches-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.branches-fields label { display: grid; gap: .4rem; font-weight: 600; }
+.branches-fields small { color: #64748b; font-weight: 400; }
+.branches-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+.branches-table-wrap { overflow-x: auto; }
+.branches-list table { width: 100%; border-collapse: collapse; }
+.branches-list th, .branches-list td { padding: .75rem; text-align: right; border-bottom: 1px solid #e2e8f0; }
+.branches-list th { background: #f8fafc; }
+.branches-list .branches-actions { margin: 0; }
+.branches-delete { background: #fef2f2; color: #b91c1c; }
+.branches-success, .branches-error { padding: .8rem; border-radius: .5rem; margin: 0; }
+.branches-success { background: #ecfdf5; color: #166534; }
+.branches-error { background: #fef2f2; color: #b91c1c; }
+@media (max-width: 700px) { .branches-fields { grid-template-columns: 1fr; } }

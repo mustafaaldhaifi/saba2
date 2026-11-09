@@ -159,32 +159,13 @@ const AdminDashboard = () => {
                 }
                 setOrderTypes(typesList);
 
-                // Fetch Branches (Cache First)
-                const cachedBranches = localStorage.getItem('saba_admin_branches');
-                let branchList = [];
-
-                if (cachedBranches) {
-                    try {
-                        branchList = JSON.parse(cachedBranches);
-                        setBranches(branchList);
-                    } catch (e) { console.error("Cache error", e); }
-                }
-
-                // If local cache missing or empty, fetch server
-                if (branchList.length === 0) {
-                    const branchesSnap = await getDocs(collection(db, "branches"));
-                    branchList = branchesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-                    // Fallback if truly empty on server
-                    if (branchList.length === 0) {
-                        branchList = [
-                            { id: 'ryad', name: 'الرياض (Riyadh)' },
-                            { id: 'other', name: 'خارج الرياض (Outside Riyadh)' }
-                        ];
-                    }
-                    setBranches(branchList);
-                    localStorage.setItem('saba_admin_branches', JSON.stringify(branchList));
-                }
+                // Read current branch status so archived branches do not linger in cached selectors.
+                const branchesSnap = await getDocs(collection(db, "branches"));
+                const branchList = branchesSnap.docs
+                    .filter(d => d.data().status !== 'archived')
+                    .map(d => ({ id: d.id, ...d.data() }));
+                setBranches(branchList);
+                localStorage.setItem('saba_admin_branches', JSON.stringify(branchList));
 
                 // Set default city if needed (Already Ryad)
                 // if(branchList.length > 0 && !selectedCity) {

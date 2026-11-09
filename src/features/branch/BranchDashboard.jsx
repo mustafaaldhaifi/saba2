@@ -19,6 +19,19 @@ const BranchDashboard = () => {
     const [branchData, setBranchData] = useState(null);
     const [loadingData, setLoadingData] = useState(true);
     const [surveyRestriction, setSurveyRestriction] = useState(undefined);
+    const [branchAvailable, setBranchAvailable] = useState(undefined);
+
+    useEffect(() => {
+        if (!branchData?.id) return undefined;
+        let active = true;
+        getDoc(doc(db, 'branches', branchData.id)).then((snapshot) => {
+            if (active) setBranchAvailable(snapshot.exists() && snapshot.data().status !== 'archived');
+        }).catch((error) => {
+            console.error('Unable to verify branch status:', error);
+            if (active) setBranchAvailable(false);
+        });
+        return () => { active = false; };
+    }, [branchData?.id]);
 
     /** Refreshes the missed-survey gate when the branch submits or an administrator reopens it. */
     const refreshSurveyRestriction = async () => {
@@ -63,7 +76,7 @@ const BranchDashboard = () => {
                     try {
                         const parsedBranch = JSON.parse(cachedBranch);
                         // Verify it matches current user
-                        if (parsedBranch.name === namePart || parsedBranch.id === namePart) {
+                        if ((parsedBranch.loginName || parsedBranch.name)?.toLowerCase() === namePart.toLowerCase() || parsedBranch.id === namePart) {
                             console.log("BranchDashboard: Using cached branch data:", parsedBranch);
                             setBranchData(parsedBranch);
                             foundInCache = true;
@@ -82,7 +95,7 @@ const BranchDashboard = () => {
                         let targetDoc = null;
 
                         // Strategy A: Query by 'name' field
-                        const q = query(branchesRef, where('name', '==', namePart));
+                        const q = query(branchesRef, where('loginName', '==', namePart.charAt(0).toUpperCase() + namePart.slice(1).toLowerCase()));
                         const querySnapshot = await getDocs(q);
 
                         if (!querySnapshot.empty) {
@@ -90,7 +103,13 @@ const BranchDashboard = () => {
                             console.log("Found branch by name query.");
                         }
 
-                        // Strategy B: Fetch by Document ID
+                        // Strategy B: Match legacy branch names that predate loginName.
+                        if (!targetDoc) {
+                            const legacy = await getDocs(query(branchesRef, where('name', '==', namePart.charAt(0).toUpperCase() + namePart.slice(1).toLowerCase())));
+                            if (!legacy.empty) targetDoc = { id: legacy.docs[0].id, ...legacy.docs[0].data() };
+                        }
+
+                        // Strategy C: Fetch by Document ID
                         if (!targetDoc) {
                             console.log("Strategy A failed. Trying Document ID...");
                             const docRef = doc(db, "branches", namePart);
@@ -108,7 +127,7 @@ const BranchDashboard = () => {
                             // Try to find a doc where name matches namePart loosely
                             const foundDoc = allDocsSnap.docs.find(d => {
                                 const data = d.data();
-                                return (data.name === namePart) || (d.id === namePart);
+                                return (data.loginName || data.name)?.toLowerCase() === namePart.toLowerCase() || (d.id === namePart);
                             });
 
                             if (foundDoc) {
@@ -124,7 +143,7 @@ const BranchDashboard = () => {
                             localStorage.setItem('currentBranch', JSON.stringify(targetDoc));
                         } else {
                             console.error("CRITICAL: Branch not found by any method:", namePart);
-                            setBranchData({ city: 'other', name: namePart }); // Final safety net
+                            setBranchAvailable(false);
                         }
 
                     } catch (e) {
@@ -217,8 +236,11 @@ const BranchDashboard = () => {
         fetchProducts();
     }, [selectedOrderType, branchData]);
 
-    if (branchData?.id && surveyRestriction === undefined) {
+    if (loadingData || (branchData?.id && (surveyRestriction === undefined || branchAvailable === undefined))) {
         return <DashboardLayout title="نظرة عامة على الفرع" role="branch"><div className="card">جارٍ التحقق من مواعيد الاستبيانات...</div></DashboardLayout>;
+    }
+    if (!branchData?.id || branchAvailable === false) {
+        return <DashboardLayout title="الفرع غير متاح" role="branch"><div className="card" role="alert">تم تعطيل هذا الفرع. تواصل مع الإدارة.</div></DashboardLayout>;
     }
     if (surveyRestriction) {
         return <DashboardLayout title="الاستبيان المطلوب" role="branch">

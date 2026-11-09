@@ -5,6 +5,7 @@ import AdminDashboard from '../features/admin/AdminDashboard';
 import BranchDashboard from '../features/branch/BranchDashboard';
 import SurveysDashboard from '../features/surveys/SurveysDashboard';
 import SurveyAdminRoute from '../features/surveys/SurveyAdminRoute';
+import BranchesManager from '../features/admin/BranchesManager';
 
 const AppRoutes = () => {
     return (
@@ -13,6 +14,7 @@ const AppRoutes = () => {
                 <Route path="/login" element={<Login />} />
                 <Route path="/admin" element={<AdminDashboard />} />
                 <Route path="/admin/surveys" element={<SurveyAdminRoute><SurveysDashboard /></SurveyAdminRoute>} />
+                <Route path="/admin/branches" element={<SurveyAdminRoute><BranchesManager /></SurveyAdminRoute>} />
                 <Route path="/branch" element={<BranchDashboard />} />
                 <Route path="/" element={<Navigate to="/login" replace />} />
             </Routes>

@@ -17,7 +17,7 @@ const Login = () => {
         const fetchBranches = async () => {
             try {
                 const querySnapshot = await getDocs(collection(db, "branches"));
-                const branchList = querySnapshot.docs.map(doc => ({
+                const branchList = querySnapshot.docs.filter(doc => doc.data().status !== 'archived').map(doc => ({
                     id: doc.id,
                     ...doc.data(), // Include all fields (city, etc.)
                     name: doc.data().name || doc.id, // Ensure name is set
@@ -62,7 +62,7 @@ const Login = () => {
 
             // Find full branch details to save to local storage
             // This avoids re-fetching in the dashboard
-            const branchDetails = branches.find(b => b.name === selectedBranch);
+            const branchDetails = branches.find(b => (b.loginName || b.name) === selectedBranch);
             if (branchDetails) {
                 // If it's admin, city might not be relevant but we can save it.
                 // If it's a branch, 'city' should be in branchDetails (we need to ensure fetchBranches gets it)
@@ -70,7 +70,7 @@ const Login = () => {
             }
 
             // Logic to determine if Admin or Branch
-            if (email.includes('admin')) {
+            if (selectedBranch.toLowerCase() === 'admin') {
                 navigate('/admin');
             } else {
                 navigate('/branch');
@@ -146,7 +146,7 @@ const Login = () => {
                                 >
                                     <option value="" disabled>-- اختر الحساب --</option>
                                     {branches.map((branch) => (
-                                        <option key={branch.id} value={branch.name}>
+                                        <option key={branch.id} value={branch.loginName || branch.name}>
                                             {branch.displayName}
                                         </option>
                                     ))}
