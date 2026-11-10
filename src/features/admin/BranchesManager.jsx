@@ -1,21 +1,23 @@
 import { useEffect, useState } from 'react';
 import DashboardLayout from '../../layouts/DashboardLayout';
-import { loadBranches, saveBranchStockVisibility } from './branchesService';
+import { getBranchStockVisibility, loadBranches, saveBranchStockVisibility } from './branchesService';
 import './branches.css';
 
 /**
  * Shows branch records and controls their daily stock column visibility.
- * 1. Load existing branches and select one for display settings.
- * 2. Save only its visibility preference and reload the stored value.
+ * 1. Load existing branches and select one, several, or all active branches.
+ * 2. Apply one shared hide/show choice to both daily stock columns.
  */
 const BranchesManager = () => {
   const [branches, setBranches] = useState([]);
-  const [selectedBranch, setSelectedBranch] = useState(null);
-  const [hideDailyStockColumns, setHideDailyStockColumns] = useState(false);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [action, setAction] = useState('hide');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const activeIds = branches.filter((branch) => branch.status !== 'archived').map((branch) => branch.id);
+  const allSelected = activeIds.length > 0 && activeIds.every((id) => selectedIds.includes(id));
 
   const reload = async () => {
     setBranches(await loadBranches());
@@ -30,33 +32,34 @@ const BranchesManager = () => {
     return () => { active = false; };
   }, []);
 
-  const selectBranch = (branch) => {
-    setSelectedBranch(branch);
-    setHideDailyStockColumns(branch.hideDailyStockColumns === true);
-    setError('');
-    setMessage('');
+  const toggleBranch = (branchId) => {
+    setSelectedIds((current) => current.includes(branchId)
+      ? current.filter((id) => id !== branchId) : [...current, branchId]);
   };
 
   /**
-   * Saves one existing branch's stock column preference.
-   * 1. Write only the preference to the selected branch record.
-   * 2. Reload the directory and clear the selection after success.
+   * Applies one stock-column action to the selected branch records.
+   * 1. Require at least one selected active branch.
+   * 2. Save the combined preference and reload the resulting list.
    */
   const submit = async (event) => {
     event.preventDefault();
-    // STEP 1: No branch record or account is created or removed here.
-    if (!selectedBranch) return;
+    // STEP 1: Avoid an accidental update when no branch is checked.
+    if (!selectedIds.length) { setError('حدد فرعًا واحدًا على الأقل.'); return; }
+
     setSaving(true);
     setError('');
     setMessage('');
     try {
-      await saveBranchStockVisibility(selectedBranch.id, hideDailyStockColumns);
-      // STEP 2: Show the value confirmed by Firestore.
+      // STEP 2: Update both columns together for the selected branches only.
+      const count = await saveBranchStockVisibility(branches, selectedIds, action === 'hide');
       await reload();
-      setSelectedBranch(null);
-      setMessage('تم حفظ إعداد عرض الأعمدة.');
+      setSelectedIds([]);
+      setMessage(`تم ${action === 'hide' ? 'إخفاء' : 'إظهار'} العمودين في ${count} فرع.`);
     } catch (cause) {
-      setError(cause.code === 'permission-denied' ? 'قواعد قاعدة البيانات لا تسمح بحفظ الإعداد لهذا الحساب.' : cause.message || 'تعذر حفظ الإعداد. حدّث الصفحة وحاول مجددًا.');
+      await reload().catch(() => {});
+      setSelectedIds([]);
+      setError(cause.code === 'permission-denied' ? 'قواعد قاعدة البيانات لا تسمح بحفظ الإعداد لهذا الحساب.' : cause.message || 'تعذر تطبيق الإعداد على الفروع.');
     } finally { setSaving(false); }
   };
 
@@ -65,24 +68,25 @@ const BranchesManager = () => {
       <header><h1>الفروع</h1><p>إعداد عرض عمودَي الموجودة والمتبقي في الجرد اليومي لكل فرع.</p></header>
       {message && <p className="branches-success" role="status">{message}</p>}
       {error && <p className="branches-error" role="alert">{error}</p>}
-      {selectedBranch && <form className="card branches-form" onSubmit={submit}>
-        <h2>إعداد أعمدة الجرد: {selectedBranch.name || selectedBranch.id}</h2>
-        <label className="branches-toggle"><input type="checkbox" checked={hideDailyStockColumns} onChange={(event) => setHideDailyStockColumns(event.target.checked)} /><span>إخفاء عمودَي الموجودة والمتبقي عن الفرع</span></label>
-        <p className="branches-hint">تُخفى الأعمدة من جدول الفرع، وتظهر خانات منفصلة لأي رصيد افتتاحي ناقص. تبقى حسابات الجرد كما هي.</p>
-        <div className="branches-actions"><button className="btn btn-primary" disabled={saving}>{saving ? 'جارٍ الحفظ...' : 'حفظ إعداد الأعمدة'}</button><button type="button" className="btn" disabled={saving} onClick={() => setSelectedBranch(null)}>إلغاء</button></div>
-      </form>}
+      <form className="card branches-form" onSubmit={submit}>
+        <h2>إخفاء أو إظهار أعمدة الجرد</h2>
+        <p className="branches-hint">حدد الفروع من القائمة، ثم اختر الإجراء. عمودا الموجودة والمتبقي يتغيران معًا.</p>
+        <label className="branches-toggle"><input type="checkbox" checked={allSelected} disabled={saving || loading || activeIds.length === 0} onChange={(event) => setSelectedIds(event.target.checked ? activeIds : [])} /><span>تحديد جميع الفروع النشطة ({activeIds.length})</span></label>
+        <label className="branches-bulk-action">الإجراء<select className="input-field" value={action} onChange={(event) => setAction(event.target.value)}><option value="hide">إخفاء العمودين</option><option value="show">إظهار العمودين</option></select></label>
+        <div className="branches-actions"><button className="btn btn-primary" disabled={saving || loading || selectedIds.length === 0}>{saving ? 'جارٍ الحفظ...' : `تطبيق على ${selectedIds.length} فرع`}</button></div>
+      </form>
       <section className="card branches-list">
         <h2>الفروع الحالية</h2>
         {loading ? <p>جارٍ تحميل الفروع...</p> : branches.length === 0 ? <p>لا توجد فروع.</p> :
           <div className="branches-table-wrap"><table>
-            <thead><tr><th>الفرع</th><th>رمز الدخول</th><th>المدينة</th><th>أعمدة المخزون</th><th>الحالة</th><th>الإعدادات</th></tr></thead>
+            <thead><tr><th>تحديد</th><th>الفرع</th><th>رمز الدخول</th><th>المدينة</th><th>أعمدة المخزون</th><th>الحالة</th></tr></thead>
             <tbody>{branches.map((branch) => <tr key={branch.id}>
+              <td data-label="تحديد"><input type="checkbox" aria-label={`تحديد فرع ${branch.name || branch.id}`} checked={selectedIds.includes(branch.id)} disabled={saving || branch.status === 'archived'} onChange={() => toggleBranch(branch.id)} /></td>
               <td data-label="الفرع">{branch.name || branch.id}</td>
               <td data-label="رمز الدخول" dir="ltr">{branch.loginName || branch.name}</td>
               <td data-label="المدينة">{branch.city === 'other' ? 'خارج الرياض' : 'الرياض'}</td>
-              <td data-label="أعمدة المخزون">{branch.hideDailyStockColumns === true ? 'مخفية للفرع' : 'ظاهرة'}</td>
+              <td data-label="أعمدة المخزون">{getBranchStockVisibility(branch) ? 'مخفية' : 'ظاهرة'}</td>
               <td data-label="الحالة">{branch.status === 'archived' ? 'مؤرشف' : 'نشط'}</td>
-              <td data-label="الإعدادات"><button type="button" className="btn" disabled={saving} onClick={() => selectBranch(branch)}>إعداد الأعمدة</button></td>
             </tr>)}</tbody>
           </table></div>}
       </section>

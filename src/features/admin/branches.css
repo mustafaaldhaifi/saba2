@@ -2,15 +2,16 @@
 .branches-page h1, .branches-page h2 { margin: 0 0 .5rem; }
 .branches-page header p { margin: 0; color: #64748b; }
 .branches-form, .branches-list { padding: 1.25rem; min-width: 0; }
-.branches-form .branches-toggle { display: flex; align-items: center; gap: .65rem; font-weight: 600; }
+.branches-form .branches-toggle { display: flex; align-items: center; gap: .65rem; margin-top: 1rem; font-weight: 600; }
 .branches-toggle input { width: 18px; height: 18px; margin: 0; }
+.branches-list input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
 .branches-hint { color: #64748b; margin-top: .75rem; }
+.branches-bulk-action { display: grid; gap: .35rem; max-width: 220px; margin-top: 1rem; font-weight: 600; }
 .branches-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
 .branches-table-wrap { overflow-x: auto; max-width: 100%; }
 .branches-list table { width: 100%; border-collapse: collapse; }
 .branches-list th, .branches-list td { padding: .75rem; text-align: right; border-bottom: 1px solid #e2e8f0; }
 .branches-list th { background: #f8fafc; }
-.branches-list .branches-actions { margin: 0; }
 .branches-success, .branches-error { padding: .8rem; border-radius: .5rem; margin: 0; }
 .branches-success { background: #ecfdf5; color: #166534; }
 .branches-error { background: #fef2f2; color: #b91c1c; }
@@ -19,6 +20,7 @@
   .branches-form, .branches-list { padding: 1rem; }
   .branches-form .branches-toggle { align-items: flex-start; }
   .branches-form .branches-toggle input { flex: 0 0 18px; margin-top: .2rem; }
+  .branches-bulk-action { max-width: none; }
   .branches-actions { display: grid; grid-template-columns: minmax(0, 1fr); }
   .branches-actions .btn { width: 100%; }
   .branches-table-wrap { overflow: visible; }
@@ -28,7 +30,5 @@
   .branches-list td { display: grid; grid-template-columns: minmax(6rem, 35%) minmax(0, 1fr); gap: .5rem; padding: .5rem 0; overflow-wrap: anywhere; }
   .branches-list td::before { content: attr(data-label); font-weight: 600; color: #475569; text-align: right; }
   .branches-list td[dir="ltr"] { direction: rtl; text-align: left; }
-  .branches-list td:last-child { display: block; border-bottom: 0; }
-  .branches-list td:last-child::before { display: block; margin-bottom: .5rem; }
-  .branches-list td:last-child .btn { width: 100%; }
+  .branches-list td:last-child { border-bottom: 0; }
 }
