@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getExpiredOccurrences, getLatestDueOccurrence, getResponseMonth, listDueOccurrencesInMonth, occurrenceDateOfResponse, scheduledDateTime } from './surveySchedule.js';
+import { getExpiredOccurrences, getLatestDueOccurrence, getResponseMonth, getSurveyMonitoringMonths, listDueOccurrencesInMonth, occurrenceDateOfResponse, scheduledDateTime } from './surveySchedule.js';
 
 const survey = (schedule) => ({ schedule: { timezone: 'Asia/Riyadh', startDate: '2026-10-01', missedPolicy: 'latest_only', ...schedule } });
 
@@ -53,4 +53,39 @@ test('old responses without month derive it from occurrence date or document ID'
   assert.equal(getResponseMonth({ id: 'survey__branch__2026-09' }), '2026-09');
   assert.equal(occurrenceDateOfResponse({ id: 'survey__branch__2026-09' }), '2026-09-01');
   assert.equal(getResponseMonth({ id: 'broken', month: undefined }), null);
+});
+
+test('weekly monitoring begins with the first scheduled month and keeps only due Saturdays', () => {
+  const item = { id: 'weekly', schedule: { type: 'weekly', weekDay: 6, startDate: '2026-11-07', timezone: 'Asia/Riyadh' } };
+  const now = new Date('2026-11-12T12:00:00Z');
+  assert.deepEqual(getSurveyMonitoringMonths(item, [], now), ['2026-11']);
+  assert.deepEqual(listDueOccurrencesInMonth(item, '2026-11', now), ['2026-11-07']);
+});
+
+test('daily monitoring counts dates from its start through today', () => {
+  const item = { id: 'daily', schedule: { type: 'daily', startDate: '2026-11-07', timezone: 'Asia/Riyadh' } };
+  const now = new Date('2026-11-12T12:00:00Z');
+  assert.deepEqual(getSurveyMonitoringMonths(item, [], now), ['2026-11']);
+  assert.deepEqual(listDueOccurrencesInMonth(item, '2026-11', now), [
+    '2026-11-07', '2026-11-08', '2026-11-09', '2026-11-10', '2026-11-11', '2026-11-12',
+  ]);
+});
+
+test('monitoring preserves historical schedule months and earlier saved answers', () => {
+  const item = {
+    id: 'changed',
+    scheduleHistory: [{ type: 'weekly', startDate: '2026-08-15', endDate: '2026-10-01', timezone: 'Asia/Riyadh' }],
+    schedule: { type: 'daily', startDate: '2026-10-01', timezone: 'Asia/Riyadh' },
+  };
+  const responses = [
+    { surveyId: 'changed', occurrenceDate: '2026-07-20' },
+    { surveyId: 'other', occurrenceDate: '2026-06-20' },
+  ];
+  assert.deepEqual(getSurveyMonitoringMonths(item, responses, new Date('2026-10-12T12:00:00Z')),
+    ['2026-10', '2026-09', '2026-08', '2026-07']);
+});
+
+test('monitoring shows no month before a future survey begins', () => {
+  const item = { id: 'future', schedule: { type: 'daily', startDate: '2026-11-20', timezone: 'Asia/Riyadh' } };
+  assert.deepEqual(getSurveyMonitoringMonths(item, [], new Date('2026-11-12T12:00:00Z')), []);
 });

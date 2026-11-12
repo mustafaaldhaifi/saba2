@@ -105,6 +105,42 @@ export const getResponseMonth = (response) => {
   return response?.id?.match(/__(\d{4}-(?:0[1-9]|1[0-2]))(?:-\d{2})?$/)?.[1] || null;
 };
 
+/**
+ * Lists monitoring months that belong to one survey's schedule or saved answers.
+ * 1. Find the earliest current or historical schedule start.
+ * 2. Include scheduled months through today and retain months with saved answers.
+ * 3. Return newest months first for the right-to-left monitoring table.
+ */
+export const getSurveyMonitoringMonths = (survey, responses = [], now = new Date()) => {
+  // STEP 1: A missing survey has no monitoring period.
+  if (!survey) return [];
+  const schedule = getSurveySchedule(survey);
+  const currentDate = getZonedDateTime(now, schedule.timezone || SURVEY_TIMEZONE).date;
+  const currentMonth = currentDate.slice(0, 7);
+  const starts = [...(survey.scheduleHistory || []), schedule]
+    .map((item) => item.startDate)
+    .filter((date) => /^\d{4}-(0[1-9]|1[0-2])-\d{2}$/.test(date || ''))
+    .sort();
+  const firstMonth = starts[0]?.slice(0, 7) || currentMonth;
+  const [startYear, startMonth] = firstMonth.split('-').map(Number);
+  const [endYear, endMonth] = currentMonth.split('-').map(Number);
+  const months = new Set();
+
+  // STEP 2: Keep past scheduled months and older months with actual answers.
+  if (!starts.length || starts[0] <= currentDate) {
+    for (let index = startYear * 12 + startMonth - 1; index <= endYear * 12 + endMonth - 1; index += 1) {
+      months.add(`${Math.floor(index / 12)}-${pad(index % 12 + 1)}`);
+    }
+  }
+  responses.filter((response) => response.surveyId === survey.id).forEach((response) => {
+    const month = getResponseMonth(response);
+    if (month && month <= currentMonth) months.add(month);
+  });
+
+  // STEP 3: Match the existing descending month order.
+  return [...months].sort().reverse();
+};
+
 export const occurrenceDateOfResponse = (response) => {
   if (/^\d{4}-\d{2}-\d{2}$/.test(response?.occurrenceDate || '')) return response.occurrenceDate;
   const idDate = response?.id?.match(/__(\d{4}-\d{2}-\d{2})$/)?.[1];
