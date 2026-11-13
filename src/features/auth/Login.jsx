@@ -1,18 +1,28 @@
 import React, { useState, useEffect } from 'react';
-import { signInWithEmailAndPassword } from "firebase/auth";
+import { browserLocalPersistence, browserSessionPersistence, setPersistence, signInWithEmailAndPassword } from "firebase/auth";
 import { getDocs, collection } from "firebase/firestore";
 import { useNavigate } from 'react-router-dom';
 import { auth, db } from '../../config/firebase';
 
+/**
+ * Show the account form after checking for a restored Firebase session.
+ * 1. Load account choices and check the existing session.
+ * 2. Authenticate a selected account with the chosen persistence.
+ * 3. Render the form only when sign-in is needed.
+ */
 const Login = () => {
+    // STEP 1: Track the form and the initial session check.
     const [branches, setBranches] = useState([]);
     const [selectedBranch, setSelectedBranch] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
     const [fetchingBranches, setFetchingBranches] = useState(true);
+    const [checkingSession, setCheckingSession] = useState(true);
+    const [rememberMe, setRememberMe] = useState(true);
     const navigate = useNavigate();
 
+    // STEP 2: Load account choices for a new sign-in.
     useEffect(() => {
         const fetchBranches = async () => {
             try {
@@ -43,45 +53,74 @@ const Login = () => {
         fetchBranches();
     }, []);
 
+    // STEP 3: Send an existing session directly to its dashboard.
+    useEffect(() => {
+        let active = true;
+        auth.authStateReady().then(() => {
+            if (!active) return;
+            const user = auth.currentUser;
+            if (user) {
+                navigate(user.email?.toLowerCase() === 'admin@saba321.com' ? '/admin' : '/branch', { replace: true });
+            } else {
+                setCheckingSession(false);
+            }
+        }).catch(() => {
+            if (active) setCheckingSession(false);
+        });
+        return () => { active = false; };
+    }, [navigate]);
+
+    /**
+     * Sign in the selected account and open its dashboard.
+     * 1. Reject missing account details.
+     * 2. Set Firebase session persistence and authenticate.
+     * 3. Cache branch details and navigate to the existing dashboard.
+     * 4. Report failures and reset the loading state.
+     */
     const handleLogin = async (e) => {
         e.preventDefault();
+        if (loading || checkingSession) return;
         setLoading(true);
         setError('');
 
+        // STEP 1: Require an account before attempting authentication.
         if (!selectedBranch) {
             setError('الرجاء اختيار الفرع');
             setLoading(false);
             return;
         }
 
-        // Email construction logic
         const email = `${selectedBranch}@saba321.com`;
 
         try {
+            // STEP 2: Choose whether this device keeps the Firebase session after closing the browser.
+            await setPersistence(auth, rememberMe ? browserLocalPersistence : browserSessionPersistence);
             await signInWithEmailAndPassword(auth, email, password);
 
-            // Find full branch details to save to local storage
-            // This avoids re-fetching in the dashboard
+            // STEP 3: Keep the branch cache used by the existing dashboard, then navigate.
             const branchDetails = branches.find(b => (b.loginName || b.name) === selectedBranch);
             if (branchDetails) {
-                // If it's admin, city might not be relevant but we can save it.
-                // If it's a branch, 'city' should be in branchDetails (we need to ensure fetchBranches gets it)
                 localStorage.setItem('currentBranch', JSON.stringify(branchDetails));
             }
 
-            // Logic to determine if Admin or Branch
             if (selectedBranch.toLowerCase() === 'admin') {
                 navigate('/admin');
             } else {
                 navigate('/branch');
             }
         } catch (err) {
+            // STEP 4: Keep the form available when authentication fails.
             console.error(err);
             setError('فشل تسجيل الدخول: تأكد من كلمة المرور');
         } finally {
             setLoading(false);
         }
     };
+
+    // STEP 4: Avoid flashing the login form while Firebase restores a saved session.
+    if (checkingSession) {
+        return <div className="page-center">جاري التحقق من تسجيل الدخول...</div>;
+    }
 
     return (
         <div className="page-center">
@@ -120,7 +159,7 @@ const Login = () => {
                     </div>
                 )}
 
-                <form onSubmit={handleLogin}>
+                <form onSubmit={handleLogin} autoComplete="on">
                     <div className="input-group">
                         <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.9rem', fontWeight: '500' }}>الجهة / الفرع</label>
                         {fetchingBranches ? (
@@ -131,6 +170,9 @@ const Login = () => {
                             <div style={{ position: 'relative' }}>
                                 <select
                                     className="input-field"
+                                    id="username"
+                                    name="username"
+                                    autoComplete="username"
                                     value={selectedBranch}
                                     onChange={(e) => setSelectedBranch(e.target.value)}
                                     required
@@ -160,12 +202,25 @@ const Login = () => {
                         <input
                             type="password"
                             className="input-field"
+                            id="password"
+                            name="password"
+                            autoComplete="current-password"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
                             required
                             placeholder="••••••••"
                         />
                     </div>
+
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem', cursor: 'pointer' }}>
+                        <input
+                            type="checkbox"
+                            checked={rememberMe}
+                            onChange={(e) => setRememberMe(e.target.checked)}
+                            disabled={loading}
+                        />
+                        تذكر تسجيل الدخول على هذا الجهاز
+                    </label>
 
                     <button
                         type="submit"
