@@ -83,6 +83,7 @@ const DashboardLayout = ({ children, title, role }) => {
         { label: 'الاستبيانات', path: '/admin/surveys', icon: '📝' },
         { label: 'الرئيسية', path: '/admin', icon: '🏠' },
         { label: 'إدارة المنتجات', path: '/admin?tab=products', icon: '📦' },
+        { label: 'القيود', path: '/admin?tab=constraints', icon: '🔒' },
         { label: 'التقارير', path: '/admin?tab=reports', icon: '📊' },
         { label: 'الفروع', path: '/admin/branches', icon: '🏢' },
         { label: 'الإعدادات', path: '/admin/settings', icon: '⚙️' },

@@ -263,3 +263,131 @@ body {
     display: none;
   }
 }
+
+.admin-view-tabs {
+  flex-wrap: wrap;
+}
+
+.constraints-filters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 20px 24px;
+}
+
+.constraints-filters .input-group {
+  margin-bottom: 0;
+}
+
+.constraints-filters label {
+  display: block;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.constraints-panel {
+  padding: clamp(12px, 2vw, 24px);
+  border-radius: 12px;
+}
+
+.constraints-header {
+  padding: 20px 24px;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.constraints-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.constraints-table {
+  min-width: 760px;
+}
+
+.constraints-table td,
+.constraints-table th {
+  overflow-wrap: anywhere;
+}
+
+.constraints-table pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.constraint-row-actions,
+.constraint-branch-buttons {
+  flex-wrap: wrap;
+}
+
+@media (max-width: 900px) {
+  .constraints-table {
+    min-width: 0;
+  }
+
+  .constraints-table thead {
+    display: none;
+  }
+
+  .constraints-table tbody {
+    display: grid;
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .constraints-table tr {
+    display: block;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    background: #fff;
+  }
+
+  .constraints-table td {
+    display: grid;
+    grid-template-columns: minmax(92px, 30%) minmax(0, 1fr);
+    gap: 10px;
+    padding: 10px 12px !important;
+    border-bottom: 1px solid #f1f5f9;
+  }
+
+  .constraints-table td:last-child {
+    border-bottom: 0;
+  }
+
+  .constraints-table td::before {
+    content: attr(data-label);
+    color: #475569;
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+
+  .constraints-table td > * {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 600px) {
+  .constraints-filters {
+    grid-template-columns: 1fr;
+    padding: 16px;
+  }
+
+  .constraints-header {
+    padding: 16px;
+  }
+
+  .constraints-header > button {
+    width: 100%;
+  }
+
+  .constraint-modal {
+    padding: 16px !important;
+  }
+
+  .constraint-branch-controls {
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 8px;
+  }
+}

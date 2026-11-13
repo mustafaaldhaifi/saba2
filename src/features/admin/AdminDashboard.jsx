@@ -7,6 +7,7 @@ import MonthlyBranchReport from './MonthlyBranchReport';
 import GlobalMonthlyReport from './GlobalMonthlyReport';
 import ProductCorrectionModal from './ProductCorrectionModal';
 import ColumnConstraintsManager from "./ColumnConstraintForm";
+import { CONSTRAINT_CATEGORIES } from './constraintCategories';
 
 // Helper: Calculate Remaining Stock
 // Helper: Calculate Remaining Stock
@@ -48,8 +49,14 @@ const calculateRemaining = (reports, product) => {
     return isNaN(total) ? '-' : total;
 };
 
+/**
+ * Coordinate the administration views and their shared data.
+ * 1. Track the active view and shared selections.
+ * 2. Load branches, products, reports, and constraint product choices.
+ * 3. Render the selected view and its existing editing tools.
+ */
 const AdminDashboard = () => {
-    // Filters
+    // STEP 1: Track the active view and shared selections.
     const [selectedCity, setSelectedCity] = useState('ryad'); // Default to ryad
     const [selectedBranch, setSelectedBranch] = useState('');
     const [selectedOrderType, setSelectedOrderType] = useState('');
@@ -83,7 +90,7 @@ const AdminDashboard = () => {
     const searchParams = new URLSearchParams(location.search);
     const tabFromUrl = searchParams.get('tab') || 'home';
 
-    // Active View State (home | products | reports)
+    // Active View State (home | products | constraints | reports)
     const [activeTab, setActiveTabState] = useState(tabFromUrl);
 
     useEffect(() => {
@@ -107,6 +114,12 @@ const AdminDashboard = () => {
     const [orderTypes, setOrderTypes] = useState([]);
     const [branches, setBranches] = useState([]); // Dynamic
     const [products, setProducts] = useState([]);
+    const [constraintProducts, setConstraintProducts] = useState([]);
+    const [constraintProductsCity, setConstraintProductsCity] = useState(null);
+    const [constraintProductsLoading, setConstraintProductsLoading] = useState(false);
+    const [constraintProductsError, setConstraintProductsError] = useState(false);
+    const [constraintProductsReload, setConstraintProductsReload] = useState(0);
+    const [selectedConstraintType, setSelectedConstraintType] = useState('lock');
     const [loadingProducts, setLoadingProducts] = useState(false);
     const [linkStatus, setLinkStatus] = useState({}); // { ryad: true, other: false }
     const [potentialMatches, setPotentialMatches] = useState([]); // Products with same name but no linkId/different linkId
@@ -142,6 +155,7 @@ const AdminDashboard = () => {
         setTimeout(() => setNotification(null), 3000); // Auto hide after 3 seconds
     };
 
+    // STEP 2: Fetch the data used by the administration views.
     // 1. Fetch Order Types & Branches on Mount
     useEffect(() => {
         const fetchData = async () => {
@@ -248,6 +262,29 @@ const AdminDashboard = () => {
 
         fetchProducts();
     }, [selectedCity, selectedOrderType]);
+
+    // Load all products in the selected city for constraint names and editing.
+    useEffect(() => {
+        if (activeTab !== 'constraints') return undefined;
+        let active = true;
+        setConstraintProductsLoading(true);
+        setConstraintProductsError(false);
+        getDocs(query(collection(db, 'products'), where('city', '==', selectedCity)))
+            .then(snapshot => {
+                if (active) {
+                    setConstraintProducts(snapshot.docs.map(product => ({ id: product.id, ...product.data() })));
+                    setConstraintProductsCity(selectedCity);
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching constraint products:', error);
+                if (active) setConstraintProductsError(true);
+            })
+            .finally(() => {
+                if (active) setConstraintProductsLoading(false);
+            });
+        return () => { active = false; };
+    }, [activeTab, selectedCity, constraintProductsReload]);
 
     // 3. Fetch Daily Report Dates (Preserving Timestamp)
     useEffect(() => {
@@ -1525,13 +1562,17 @@ const handleSave = async (e) => {
         }
     };
 
+    // STEP 3: Show the selected administration view.
     return (
-        <DashboardLayout title={activeTab === 'home' ? "الرئيسية" : activeTab === 'products' ? "إدارة المنتجات" : "التقارير"} role="admin">
+        <DashboardLayout title={activeTab === 'home' ? "الرئيسية" : activeTab === 'products' ? "إدارة المنتجات" : activeTab === 'constraints' ? "القيود" : "التقارير"} role="admin">
 
             {activeTab !== 'home' && (
-                <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', borderBottom: '1px solid #e2e8f0', paddingBottom: '1rem' }}>
+                <div className="admin-view-tabs" style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', borderBottom: '1px solid #e2e8f0', paddingBottom: '1rem' }}>
                     <button className={`btn ${activeTab === 'products' ? 'btn-primary' : ''}`} onClick={() => setActiveTab('products')} style={{ background: activeTab === 'products' ? '' : 'transparent', color: activeTab === 'products' ? '#fff' : '#64748b', boxShadow: 'none', border: activeTab === 'products' ? 'none' : '1px solid #cbd5e1' }}>
                         📦 إدارة المنتجات
+                    </button>
+                    <button className={`btn ${activeTab === 'constraints' ? 'btn-primary' : ''}`} onClick={() => setActiveTab('constraints')} style={{ background: activeTab === 'constraints' ? '' : 'transparent', color: activeTab === 'constraints' ? '#fff' : '#64748b', boxShadow: 'none', border: activeTab === 'constraints' ? 'none' : '1px solid #cbd5e1' }}>
+                        🔒 القيود
                     </button>
                     <button className={`btn ${activeTab === 'reports' ? 'btn-primary' : ''}`} onClick={() => setActiveTab('reports')} style={{ background: activeTab === 'reports' ? '' : 'transparent', color: activeTab === 'reports' ? '#fff' : '#64748b', boxShadow: 'none', border: activeTab === 'reports' ? 'none' : '1px solid #cbd5e1' }}>
                         📊 التقارير
@@ -1558,6 +1599,36 @@ const handleSave = async (e) => {
                         </div>
                     </div>
                 </div>
+            ) : activeTab === 'constraints' ? (
+                <section aria-label="إدارة القيود">
+                    <div className="card constraints-filters">
+                        <div className="input-group">
+                            <label htmlFor="constraints-city">المدينة</label>
+                            <select id="constraints-city" className="input-field" value={selectedCity} onChange={event => setSelectedCity(event.target.value)}>
+                                <option value="ryad">الرياض (Riyadh)</option>
+                                <option value="other">خارج الرياض (Outside Riyadh)</option>
+                            </select>
+                        </div>
+                        <div className="input-group">
+                            <label htmlFor="constraints-type">نوع القيد</label>
+                            <select id="constraints-type" className="input-field" value={selectedConstraintType} onChange={event => setSelectedConstraintType(event.target.value)}>
+                                {CONSTRAINT_CATEGORIES.map(category => (
+                                    <option key={category.key} value={category.key}>{category.title}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+                    {(constraintProductsLoading || constraintProductsCity !== selectedCity) && !constraintProductsError && <p role="status">جاري تحميل المنتجات للقيود...</p>}
+                    {constraintProductsError && (
+                        <div className="card" role="alert">
+                            تعذر تحميل المنتجات المرتبطة بالقيود.
+                            <button type="button" className="btn" onClick={() => setConstraintProductsReload(value => value + 1)}>إعادة المحاولة</button>
+                        </div>
+                    )}
+                    {!constraintProductsLoading && !constraintProductsError && constraintProductsCity === selectedCity && (
+                        <ColumnConstraintsManager branches={branches} items={constraintProducts} city={selectedCity} selectedType={selectedConstraintType} />
+                    )}
+                </section>
             ) : (
                 <>
 
@@ -1647,7 +1718,6 @@ const handleSave = async (e) => {
                         </div>
                     </div>
 
-<ColumnConstraintsManager branches={branches} items={products} city={selectedCity} />
                     {/* Products Action Bar */}
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
                         <h2 style={{ fontSize: '1.5rem', color: activeTab === 'reports' ? '#10b981' : 'hsl(var(--color-primary))', fontWeight: '700' }}>

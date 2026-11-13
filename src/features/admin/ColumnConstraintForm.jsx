@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { CONSTRAINT_CATEGORIES } from './constraintCategories';
 import {
   subscribeToConstraints,
   addConstraint,
@@ -143,11 +144,18 @@ export const cleanConstraintPayload = (rawForm, allBranches = [], allItems = [])
 // ----------------------------------------------------------------------
 // 📦 نافذة إدخال وتعديل القيود (Constraint Modal Form)
 // ----------------------------------------------------------------------
+/**
+ * Edit a constraint using the selected city's branches and products.
+ * 1. Prepare branch choices when the dialog opens.
+ * 2. Restore an existing rule or reset the form.
+ * 3. Validate and save the rule through the existing constraint service.
+ */
 const ConstraintFormModal = ({
   isOpen,
   onClose,
   editingConstraint,
   selectedCity,
+  initialAction = 'lock',
   branches = [],
   items = []
 }) => {
@@ -175,7 +183,14 @@ const ConstraintFormModal = ({
   // معرف مجموعة الحصة الأسبوعية الحالية (يبقى ثابتاً بين مرات التعديل)
   const [currentQuotaGroupId, setCurrentQuotaGroupId] = useState(null);
 
+  // STEP 1: Show the relevant branches as soon as the dialog opens.
+  useEffect(() => {
+    if (!isOpen) return;
+    setCity(selectedCity);
+    setConstraintBranches(branches.filter((branch) => branch.city === selectedCity || (!branch.city && selectedCity === 'ryad')));
+  }, [isOpen, selectedCity, branches]);
 
+  // STEP 2: Restore the selected rule or initialize a new one.
   useEffect(() => {
     if (editingConstraint) {
       setName(editingConstraint.name || editingConstraint.title || "");
@@ -290,7 +305,7 @@ const ConstraintFormModal = ({
 
   const resetForm = () => {
     setName("");
-    setAction("lock");
+    setAction(initialAction);
     setDates([]);
     setDateInput("");
     setSelectedBranchIds([]);
@@ -472,6 +487,7 @@ const handleDefaultValueChange = (itemId, field, value) => {
 
   };
 
+  // STEP 3: Validate and save the selected rule.
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!name.trim()) {
@@ -585,7 +601,7 @@ onClose();
 
   return (
     <div style={modalOverlayStyle}>
-      <div style={modalContentStyle}>
+      <div className="constraint-modal" style={modalContentStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #e5e7eb", paddingBottom: "12px", marginBottom: "16px" }}>
           <h2 style={{ fontSize: "1.25rem", fontWeight: "bold", margin: 0, color: "#111827" }}>
             {editingConstraint ? "✏️ تعديل القيد" : "➕ إضافة قيد جديد"}
@@ -686,11 +702,11 @@ onClose();
     {!editingConstraint ? (
   <>
     {/* 1. صف العنوان والأزرار */}
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+    <div className="constraint-branch-controls" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
       <label style={labelStyle}>
         {action === "weekly_quota" ? "الفروع (مطلوب): *" : "الفروع (Branches):"}
       </label>
-      <div style={{ display: "flex", gap: "6px" }}>
+      <div className="constraint-branch-buttons" style={{ display: "flex", gap: "6px" }}>
         <button type="button" onClick={() => handleSelectAllBranchesInsideOrOutsideRyad('ryad')} style={smallButtonStyle}>
           داخل الرياض
         </button>
@@ -1029,24 +1045,26 @@ onClose();
 // ----------------------------------------------------------------------
 // 🖥️ المكون الرئيسي: لوحة التحكم للقيود (Dashboard & CRUD Grid)
 // ----------------------------------------------------------------------
-export default function ColumnConstraintsManager({ branches = [], items = [] ,city }) {
-  // console.log("Selected City in Parent:", selectedCity);
+/**
+ * Organize existing constraints by rule type and provide editing actions.
+ * 1. Subscribe to saved constraints.
+ * 2. Open the existing form for creation or editing.
+ * 3. Filter rules by city and selected type, then render their details.
+ */
+export default function ColumnConstraintsManager({ branches = [], items = [], city, selectedType = 'lock' }) {
+  // STEP 1: Read the current rules from Firestore.
   const [constraints, setConstraints] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingConstraint, setEditingConstraint] = useState(null);
 
   useEffect(() => {
-    
-    // setCity(city)
     const unsubscribe = subscribeToConstraints((data) => {
-    console.log("Selected City in Parent:", city);
-      console.log(data);
-      
       setConstraints(data || []);
     });
     return () => unsubscribe();
   }, []);
 
+  // STEP 2: Open the existing rule editor.
   const handleCreate = () => {
 
     setEditingConstraint(null);
@@ -1064,21 +1082,6 @@ export default function ColumnConstraintsManager({ branches = [], items = [] ,ci
     }
   };
 
-  const getActionBadge = (action) => {
-    switch (action) {
-      case "lock":
-        return { bg: "#fee2e2", color: "#b91c1c", label: "🔒 lock (قفل)" };
-      case "default_value":
-        return { bg: "#dbeafe", color: "#1d4ed8", label: "📌 default_value (قيمة افتراضية)" };
-      case "max_value":
-        return { bg: "#dcfce7", color: "#15803d", label: "⚡ max_value (حد أقصى)" };
-      case "weekly_quota":
-        return { bg: "#fef3c7", color: "#92400e", label: "📅 weekly_quota (حصة أسبوعية)" };
-      default:
-        return { bg: "#f3f4f6", color: "#374151", label: action };
-    }
-  };
-
   const getBranchName = (id) => {
     const branch = branches.find((b) => (b.id || b._id) === id);
     return branch?.name || branch?.title || id;
@@ -1089,16 +1092,11 @@ export default function ColumnConstraintsManager({ branches = [], items = [] ,ci
     return item?.name || item?.title || id;
   };
 
-  const CONSTRAINT_CATEGORIES = [
-    { key: "lock", title: "🔒 قيود القفل", description: "قواعد قفل الأعمدة (transfer, staffMeal)", headerBg: "#fef2f2", borderColor: "#fecaca" },
-    { key: "default_value", title: "📌 القيم الافتراضية", description: "تعيين قيم افتراضية للأعمدة", headerBg: "#eff6ff", borderColor: "#bfdbfe" },
-    { key: "max_value", title: "⚡ الحد الأقصى للقيم", description: "تحديد أقصى قيمة مسموحة لكل عمود", headerBg: "#f0fdf4", borderColor: "#bbf7d0" },
-    { key: "weekly_quota", title: "📅 الحصة الأسبوعية", description: "تحديد حصة أسبوعية للمنتجات لكل فرع", headerBg: "#fffbeb", borderColor: "#fcd34d" }
-  ];
-
-  const groupedConstraints = CONSTRAINT_CATEGORIES.map((cat) => ({
+  // STEP 3: Show only the chosen rule type for the selected city.
+  const visibleConstraints = constraints.filter((constraint) => !constraint.selectedCity || constraint.selectedCity === city);
+  const groupedConstraints = CONSTRAINT_CATEGORIES.filter((cat) => cat.key === selectedType).map((cat) => ({
     ...cat,
-    items: constraints.filter((c) => c.action === cat.key)
+    items: visibleConstraints.filter((c) => c.action === cat.key)
   }));
 
   const renderConstraintDetails = (item) => {
@@ -1148,26 +1146,16 @@ export default function ColumnConstraintsManager({ branches = [], items = [] ,ci
   };
 
   const renderConstraintRow = (item) => {
-    const badge = getActionBadge(item.action);
     return (
       <tr key={item.id} style={{ borderBottom: "1px solid #e2e8f0" }}>
-        <td style={tdStyle}>
-          <div style={{ fontWeight: "bold", fontSize: "1rem", color: "#0f172a", marginBottom: "4px" }}>
+        <td data-label="تسمية القيد" style={tdStyle}>
+          <div style={{ fontWeight: "bold", fontSize: "1rem", color: "#0f172a" }}>
             {item.name || item.title || "بدون عنوان"}
           </div>
-          <span style={{ padding: "3px 8px", borderRadius: "4px", fontSize: "0.75rem", fontWeight: "bold", backgroundColor: badge.bg, color: badge.color }}>
-            {badge.label}
-          </span>
-        </td>
-         <td style={tdStyle}>
-          <div style={{ fontWeight: "bold", fontSize: "1rem", color: "#0f172a", marginBottom: "4px" }}>
-            {item.selectedCity || "لم يتم التعيين"}
-          </div>
-          
         </td>
 
-        <td style={tdStyle}>
-          {item.action === "weekly_quota" ? (
+        <td data-label="التواريخ" style={tdStyle}>
+          {item.action !== "lock" ? (
             <span style={{ color: "#92400e", fontSize: "0.85rem" }}>—</span>
           ) : item.dates && item.dates.length > 0 ? (
             <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
@@ -1176,11 +1164,11 @@ export default function ColumnConstraintsManager({ branches = [], items = [] ,ci
               ))}
             </div>
           ) : (
-            <span style={{ color: "#2563eb", fontWeight: "bold", fontSize: "0.85rem" }}>🌐 الكل []</span>
+            <span style={{ color: "#2563eb", fontWeight: "bold", fontSize: "0.85rem" }}>جميع التواريخ</span>
           )}
         </td>
 
-        <td style={tdStyle}>
+        <td data-label="الفروع" style={tdStyle}>
           {item.action === "weekly_quota" ? (
             <div style={{ fontSize: "0.85rem" }}>
               {
@@ -1193,16 +1181,16 @@ export default function ColumnConstraintsManager({ branches = [], items = [] ,ci
               {item.branchIds.map(getBranchName).join("، ")}
             </span>
           ) : (
-            <span style={{ color: "#2563eb", fontWeight: "bold", fontSize: "0.85rem" }}>🌐 جميع الفروع []</span>
+            <span style={{ color: "#2563eb", fontWeight: "bold", fontSize: "0.85rem" }}>جميع الفروع</span>
           )}
         </td>
 
-        <td style={tdStyle}>
+        <td data-label={item.action === 'weekly_quota' ? 'المنتجات والكميات' : 'الأصناف والأعمدة'} style={tdStyle}>
           {renderConstraintDetails(item)}
         </td>
 
-        <td style={tdStyle}>
-          <div style={{ display: "flex", gap: "8px" }}>
+        <td data-label="الإجراءات" style={tdStyle}>
+          <div className="constraint-row-actions" style={{ display: "flex", gap: "8px" }}>
             <button
               onClick={() => handleEdit(item)}
               style={{ backgroundColor: "#f59e0b", color: "#fff", border: "none", padding: "6px 12px", borderRadius: "6px", cursor: "pointer", fontSize: "0.85rem", fontWeight: "bold" }}
@@ -1221,16 +1209,17 @@ export default function ColumnConstraintsManager({ branches = [], items = [] ,ci
     );
   };
 
+  // STEP 3: Present each rule group and keep the editor in the same view.
   return (
-    <div style={{ padding: "24px", backgroundColor: "#f8fafc", minHeight: "100vh", direction: "rtl", textAlign: "right", fontFamily: "sans-serif" }}>
+    <div className="constraints-panel" style={{ backgroundColor: "#f8fafc", direction: "rtl", textAlign: "right", fontFamily: "sans-serif" }}>
       {/* الهيدر والعنوان */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", backgroundColor: "#fff", padding: "20px 24px", borderRadius: "12px", boxShadow: "0 1px 3px rgba(0,0,0,0.1)", marginBottom: "24px" }}>
+      <div className="constraints-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 1px 3px rgba(0,0,0,0.1)", marginBottom: "24px" }}>
         <div>
           <h1 style={{ fontSize: "1.5rem", fontWeight: "bold", margin: 0, color: "#0f172a" }}>
-            📊 لوحة تحكم قيود الهياكل (Inventory & Branch Rules Dashboard)
+            🔒 القيود
           </h1>
           <p style={{ margin: "4px 0 0 0", fontSize: "0.875rem", color: "#64748b" }}>
-            إدارة مرنة ودقيقة لقواعد القفل، القيم الافتراضية، الحد الأقصى، والحصة الأسبوعية
+            اختر المدينة ونوع القيد لمراجعة القواعد وإدارتها.
           </p>
         </div>
 
@@ -1253,12 +1242,7 @@ export default function ColumnConstraintsManager({ branches = [], items = [] ,ci
       </div>
 
       {/* عرض القيود مقسمة حسب الفئات */}
-      {constraints.length === 0 ? (
-        <div style={{ backgroundColor: "#fff", borderRadius: "12px", boxShadow: "0 1px 3px rgba(0,0,0,0.1)", padding: "48px", textAlign: "center", color: "#64748b" }}>
-          لا توجد قيود مسجلة حالياً في اللوحة.
-        </div>
-      ) : (
-        groupedConstraints.map((category) => (
+      {groupedConstraints.map((category) => (
           <div
             key={category.key}
             style={{
@@ -1276,7 +1260,9 @@ export default function ColumnConstraintsManager({ branches = [], items = [] ,ci
               borderBottom: `2px solid ${category.borderColor}`,
               display: "flex",
               justifyContent: "space-between",
-              alignItems: "center"
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: "8px"
             }}>
               <div>
                 <h2 style={{ margin: 0, fontSize: "1.1rem", fontWeight: "bold", color: "#0f172a" }}>
@@ -1304,11 +1290,11 @@ export default function ColumnConstraintsManager({ branches = [], items = [] ,ci
                 لا توجد قيود في هذه الفئة
               </div>
             ) : (
-              <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "right" }}>
+              <div className="constraints-table-wrap">
+              <table className="constraints-table" style={{ width: "100%", borderCollapse: "collapse", textAlign: "right" }}>
                 <thead>
                   <tr style={{ backgroundColor: "#f8fafc", borderBottom: "1px solid #e2e8f0", color: "#334155", fontSize: "0.875rem" }}>
                     <th style={thStyle}>تسمية القيد</th>
-                    <th style={thStyle}>المدينة</th>
                     <th style={thStyle}>التواريخ</th>
                     <th style={thStyle}>الفروع</th>
                     <th style={thStyle}>{category.key === "weekly_quota" ? "المنتجات والكميات" : "الأصناف والأعمدة"}</th>
@@ -1319,15 +1305,16 @@ export default function ColumnConstraintsManager({ branches = [], items = [] ,ci
                   {category.items.map(renderConstraintRow)}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
-        ))
-      )}
+        ))}
 
       {/* النافذة المنبثقة للنموذج */}
       <ConstraintFormModal
         isOpen={isModalOpen}
         selectedCity={city}
+        initialAction={selectedType}
         onClose={() => setIsModalOpen(false)}
         editingConstraint={editingConstraint}
         branches={branches}
