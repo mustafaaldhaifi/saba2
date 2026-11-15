@@ -196,6 +196,44 @@ body {
   padding: 0.75rem;
 }
 
+.sidebar-submenu {
+  margin: 4px 20px 8px 0;
+  padding: 0 12px 0 0;
+  border-right: 2px solid #e2e8f0;
+  list-style: none;
+}
+
+.sidebar-submenu-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: hsl(var(--color-text-main));
+  text-align: right;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.sidebar-submenu-link:hover,
+.sidebar-submenu-link.is-active {
+  background: hsl(var(--color-primary) / 0.1);
+  color: hsl(var(--color-primary));
+}
+
+.sidebar-submenu-link:focus-visible {
+  outline: 2px solid hsl(var(--color-primary));
+  outline-offset: 2px;
+}
+
+.sidebar.collapsed .sidebar-submenu {
+  display: none;
+}
+
 .main-content.collapsed {
   margin-right: 80px;
 }
@@ -264,8 +302,23 @@ body {
   }
 }
 
-.admin-view-tabs {
-  flex-wrap: wrap;
+.constraint-section-empty {
+  padding: 48px 24px;
+  text-align: center;
+}
+
+.constraint-section-empty > span {
+  font-size: 2rem;
+}
+
+.constraint-section-empty h2 {
+  margin: 12px 0 8px;
+  color: #0f172a;
+}
+
+.constraint-section-empty p {
+  margin: 0;
+  color: #64748b;
 }
 
 .constraints-filters {

@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import DashboardLayout from '../../layouts/DashboardLayout';
-import { collection, query, where, getDocs, doc, getDoc } from "firebase/firestore";
+import { collection, query, where, getDocs, doc, getDoc, onSnapshot } from "firebase/firestore";
 import { db, auth } from '../../config/firebase'; // Ensure path is correct
 import { onAuthStateChanged } from "firebase/auth";
 import BranchSurveyPanel from '../surveys/BranchSurveyPanel';
 import { getBranchSurveyRestriction } from '../surveys/surveyService';
 
 /**
- * Shows branch operations only while no expired survey blocks the account.
- * 1. Resolve the branch and periodically read missed survey deadlines.
- * 2. Show the restricted state or reopened survey before normal branch controls.
+ * Shows branch operations only while the branch has no current ban.
+ * 1. Resolve the branch and periodically read its current status and survey deadlines.
+ * 2. Show the ban or reopened survey before normal branch controls.
  */
 const BranchDashboard = () => {
     const [selectedOrderType, setSelectedOrderType] = useState('');
@@ -19,6 +19,7 @@ const BranchDashboard = () => {
     const [branchData, setBranchData] = useState(null);
     const [loadingData, setLoadingData] = useState(true);
     const [surveyRestriction, setSurveyRestriction] = useState(undefined);
+    const [banAttempt, setBanAttempt] = useState(undefined);
     const [branchAvailable, setBranchAvailable] = useState(undefined);
 
     useEffect(() => {
@@ -33,6 +34,13 @@ const BranchDashboard = () => {
         return () => { active = false; };
     }, [branchData?.id]);
 
+    useEffect(() => {
+        if (!branchData?.id) return undefined;
+        return onSnapshot(doc(db, 'banAttempts', branchData.id),
+            (snapshot) => setBanAttempt(snapshot.data() || null),
+            (error) => { console.error('Unable to watch ban attempt:', error); setBanAttempt(undefined); });
+    }, [branchData?.id]);
+
     /** Refreshes the missed-survey gate when the branch submits or an administrator reopens it. */
     const refreshSurveyRestriction = async () => {
         if (!branchData?.id) return;
@@ -44,9 +52,10 @@ const BranchDashboard = () => {
         let active = true;
         const refresh = async () => {
             try {
-                const restriction = await getBranchSurveyRestriction(branchData.id);
+                const restriction = await getBranchSurveyRestriction(branchData.id, banAttempt);
                 if (active) setSurveyRestriction((current) => current?.survey?.id === restriction?.survey?.id &&
-                    current?.occurrenceDate === restriction?.occurrenceDate && current?.reopened === restriction?.reopened
+                    current?.occurrenceDate === restriction?.occurrenceDate && current?.reopened === restriction?.reopened &&
+                    current?.banMessage === restriction?.banMessage
                     ? current : restriction);
             } catch (error) {
                 console.error('Unable to verify survey restriction:', error);
@@ -56,7 +65,7 @@ const BranchDashboard = () => {
         refresh();
         const timer = window.setInterval(refresh, 60_000);
         return () => { active = false; window.clearInterval(timer); };
-    }, [branchData?.id]);
+    }, [branchData?.id, banAttempt]);
 
     // 1. Fetch Branch Data and Order Types on Mount
     useEffect(() => {
@@ -160,14 +169,6 @@ const BranchDashboard = () => {
                     ...doc.data()
                 }));
 
-                // Ensure "Monthly Inventory" is present with the known ID
-                const monthlyId = "WbAP06wLDRvZFTYUtkjU";
-                const monthlyExists = typesList.some(t => t.id === monthlyId);
-
-                // if (!monthlyExists) {
-                //     typesList.push({ id: monthlyId, name: 'الجرد الشهري' });
-                // }
-
                 setOrderTypes(typesList);
             } catch (error) {
                 console.error("Error fetching types:", error);
@@ -246,7 +247,7 @@ const BranchDashboard = () => {
         return <DashboardLayout title="الاستبيان المطلوب" role="branch">
             {surveyRestriction.reopened && surveyRestriction.survey.kind !== 'inventory'
                 ? <><div className="card">تم فتح التقييد لتعبئة استبيان «{surveyRestriction.survey.title}» لموعد {surveyRestriction.occurrenceDate}. أرسل الإجابة لاستعادة دخول صفحة الفرع.</div><BranchSurveyPanel branchId={branchData.id} forcedOccurrence={surveyRestriction} onSubmitted={refreshSurveyRestriction} /></>
-                : <div className="card" role="alert">{surveyRestriction.reopened ? `تم فتح التقييد لاستبيان «${surveyRestriction.survey.title}». أكمل جرد الأصناف في صفحة جرد الفرع المخصصة.` : `تم تقييد حسابك لعدم الالتزام بمواعيد الإدخال.${surveyRestriction.verificationFailed ? ' تعذر التحقق من الحالة الآن؛ حاول تحديث الصفحة.' : ` الاستبيان المطلوب: ${surveyRestriction.survey.title}، موعد ${surveyRestriction.occurrenceDate}. تواصل مع الإدارة لفتح التقييد.`}`}</div>}
+                : <div className="card" role="alert">{surveyRestriction.reopened ? `تم فتح التقييد لاستبيان «${surveyRestriction.survey.title}». أكمل جرد الأصناف في صفحة جرد الفرع المخصصة.` : surveyRestriction.banMessage ? `الفرع محظور: ${surveyRestriction.banMessage}` : surveyRestriction.verificationFailed ? 'تعذر التحقق من حالة الفرع الآن؛ حاول تحديث الصفحة.' : 'الفرع مقيّد. تواصل مع الإدارة.'}</div>}
         </DashboardLayout>;
     }
     return (

@@ -4,17 +4,32 @@ import { db } from '../../config/firebase';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
+import { reportBranchesForCity } from './reportBranches';
+import { daysForReportPeriod, totalsForReportPeriod } from './reportPeriod';
 
+/**
+ * Builds a monthly or single-day report across selected branches.
+ * 1. Start with branches in the chosen city scope and period.
+ * 2. Load product identities and selected summary days for those branches.
+ * 3. Present branch choices and export results in their supplied order.
+ */
 const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName, products: currentProducts }) => {
+    // STEP 1: The parent supplies Riyadh-first branches; select the requested city initially.
     const [selectedMonth, setSelectedMonth] = useState(initialMonth || new Date().toISOString().substring(0, 7));
-    const [selectedBranches, setSelectedBranches] = useState(branches.map(b => b.id));
+    const [selectedDay, setSelectedDay] = useState('');
+    const [selectedBranches, setSelectedBranches] = useState(() =>
+        reportBranchesForCity(branches, cityName || 'all').map(branch => branch.id));
     const [selectedFields, setSelectedFields] = useState(['sales']);
     const [isProcessing, setIsProcessing] = useState(false);
     const [progress, setProgress] = useState({ current: 0, total: branches.length, branchName: '' });
     const [completed, setCompleted] = useState(false);
+    const [processedSelectionKey, setProcessedSelectionKey] = useState('');
     const [allProducts, setAllProducts] = useState([]);
     const [aggregatedData, setAggregatedData] = useState({}); // { linkId: { branchId: { field: value } } }
     const [cityFilter, setCityFilter] = useState(cityName || 'all');
+    const selectionKey = JSON.stringify([selectedMonth, selectedDay, selectedBranches, selectedFields]);
+    const canExport = completed && processedSelectionKey === selectionKey;
+    const reportPeriod = selectedDay || selectedMonth;
 
     const fieldOptions = [
          { value: 'openingStock', label: 'الرصيد الموجود' },
@@ -31,7 +46,7 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
         { value: 'closeStock', label: 'المتبقي' },
     ];
 
-    // 1. Fetch All Products for this Type (Full city scope)
+    // STEP 2: Fetch all product identities so both city groups can be combined.
     useEffect(() => {
         const fetchAllProducts = async () => {
             if (!typeId) return;
@@ -48,9 +63,20 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
         fetchAllProducts();
     }, [typeId]);
 
+    /**
+     * Aggregates the chosen period across the selected branches.
+     * 1. Validate the period and selected report inputs.
+     * 2. Load monthly summaries and keep only the requested days.
+     * 3. Publish totals only when the period has data.
+     */
     const handleStartProcessing = async () => {
+        // STEP 1: A selected day must belong to the shown month.
         if (!selectedMonth || selectedBranches.length === 0 || selectedFields.length === 0) {
             alert("يرجى اختيار شهر واحد وفرع واحد ونوع بيانات واحد على الأقل");
+            return;
+        }
+        if (selectedDay && selectedDay.slice(0, 7) !== selectedMonth) {
+            alert('تاريخ التقرير يجب أن يكون ضمن الشهر المحدد.');
             return;
         }
         setIsProcessing(true);
@@ -60,11 +86,15 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
         const targetBranches = branches.filter(b => selectedBranches.includes(b.id));
 
         try {
+            // STEP 2: Product identities and monthly summaries cover both city groups.
+            const productLookup = allProducts.length ? allProducts :
+                (await getDocs(query(collection(db, 'products'), where('typeId', '==', typeId))))
+                    .docs.map(product => ({ id: product.id, ...product.data() }));
             for (let i = 0; i < targetBranches.length; i++) {
                 const branch = targetBranches[i];
                 setProgress({ current: i + 1, total: targetBranches.length, branchName: branch.name });
 
-                // Fetch Monthly Summaries for this branch & month
+                // Read the month containing the requested report day.
                 const q = query(
                     collection(db, "product_monthly_summaries"),
                     where("branchId", "==", branch.id),
@@ -74,38 +104,16 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                 const snap = await getDocs(q);
 
                 snap.docs.forEach(doc => {
-                   
-                    
                     const data = doc.data();
-                     const productId = data.productId;
-
-
-                     // 2. فلترة وترتيب مفاتيح الأيام (مثل days.01, days.02) تصاعدياً
-    // const dayKeys = Object.keys(data)
-    //     .filter(key => key.startsWith('days.'))
-    //     .sort((a, b) => Number(a.split('.')[1]) - Number(b.split('.')[1]));
-
-    // // تهيئة المتغيرات بقيم صفرية افتراضية
-    // data.openingStock_pure = 0;
-    // data.remaining_pure = 0;
-
-    // // 3. استخراج القيم النقية وحفظها مباشرة داخل نفس كائن المستند المستقل (docData)
-    // if (dayKeys.length > 0) {
-    //     const firstDayKey = dayKeys[0];
-    //     const lastDayKey = dayKeys[dayKeys.length - 1];
-
-    //     // أول يوم للموجودة (الافتتاحي)
-    //     data.openingStock_pure = data[firstDayKey]?.openingStock || 0;
-    //     console.log(data.openingStock_pure);
-        
-        
-    //     // آخر يوم للمتبقي (closeStock)
-    //     data.remaining_pure = data[lastDayKey]?.closeStock || 0;
-    // }
+                    const productId = data.productId;
                     if (!productId) return;
 
+                    const dayValuesMap = daysForReportPeriod(data, selectedDay);
+                    const totals = totalsForReportPeriod(dayValuesMap, selectedFields);
+                    if (selectedDay && !totals) return;
+
                     // Find product linkId or use productId as fallback
-                    const prodInfo = allProducts.find(p => p.id === productId) || currentProducts.find(p => p.id === productId);
+                    const prodInfo = productLookup.find(p => p.id === productId) || currentProducts.find(p => p.id === productId);
                     const linkId = prodInfo?.linkId || productId;
                     const prodName = prodInfo?.name || "منتج غير معروف";
 
@@ -121,47 +129,26 @@ const GlobalMonthlyReport = ({ branches, typeId, initialMonth, onClose, cityName
                         results[linkId].branches[branch.id] = {};
                     }
 
-                    // Collect day values handling both standard maps and dot notation keys
-                    let dayValuesMap = {};
-                    if (data.days) {
-                        Object.keys(data.days).forEach(dayKey => {
-                            dayValuesMap[dayKey] = data.days[dayKey];
-                        });
+                    // Stock balances use the period endpoints; flow fields use its included days.
+                    if (totals) {
+                        results[linkId].branches[branch.id].openingStock_pure = totals.openingStock_pure;
+                        results[linkId].branches[branch.id].remaining_pure = totals.remaining_pure;
                     }
-                    Object.keys(data).forEach(key => {
-                        if (key.startsWith('days.')) {
-                            const dayKey = key.split('.')[1];
-                            if (!dayValuesMap[dayKey]) {
-                                dayValuesMap[dayKey] = data[key];
-                            }
-                        }
-                    });
-
-                    // 1. ترتيب الأيام تصاعدياً لمعرفة أول يوم وآخر يوم في الشهر
-const sortedDays = Object.keys(dayValuesMap).sort((a, b) => Number(a) - Number(b));
-
-if (sortedDays.length > 0) {
-    const firstDayKey = sortedDays[0];
-    const lastDayKey = sortedDays[sortedDays.length - 1];
-
-    // 2. تخزين القيمة الصافية للافتتاحي (أول يوم) والختامي (آخر يوم) بدون أي جمع تراكمي
-    results[linkId].branches[branch.id].openingStock_pure = Number(dayValuesMap[firstDayKey]?.openingStock || 0);
-    results[linkId].branches[branch.id].remaining_pure = Number(dayValuesMap[lastDayKey]?.closeStock || 0);
-}
-
-                    // Sum the values for all selected fields across all collected days
                     selectedFields.forEach(field => {
-                        let totalVal = 0;
-                        Object.values(dayValuesMap).forEach(dayVal => {
-                            const val = Number(dayVal[field] || 0);
-                            totalVal += val;
-                        });
-                        results[linkId].branches[branch.id][field] = (results[linkId].branches[branch.id][field] || 0) + totalVal;
+                        results[linkId].branches[branch.id][field] =
+                            (results[linkId].branches[branch.id][field] || 0) + (totals?.fieldTotals[field] || 0);
                     });
                 });
             }
 
+            // STEP 3: Empty days must not produce an export with misleading zeros.
+            if (!Object.keys(results).length) {
+                alert(selectedDay ? 'لا توجد بيانات جرد في التاريخ المحدد للفروع المختارة.' :
+                    'لا توجد بيانات جرد في الشهر المحدد للفروع المختارة.');
+                return;
+            }
             setAggregatedData(results);
+            setProcessedSelectionKey(selectionKey);
             setCompleted(true);
         } catch (error) {
             console.error("Processing error:", error);
@@ -172,11 +159,18 @@ if (sortedDays.length > 0) {
     };
 
 
+    /**
+     * Exports the processed day or month as one combined workbook.
+     * 1. Refuse totals from a different selection.
+     * 2. Build branch columns and field sections in display order.
+     * 3. Save a file named for the processed period.
+     */
     const handleExport = async () => {
-    // شرط الأمان: جلب البيانات فقط إذا تم اختيار الفروع والحقول وتوفرت البيانات
+    // STEP 1: Filter changes require a fresh processing run.
     
-    if (Object.keys(aggregatedData).length === 0 || selectedBranches.length === 0 || selectedFields.length === 0) return;
+    if (!canExport || Object.keys(aggregatedData).length === 0 || selectedBranches.length === 0 || selectedFields.length === 0) return;
 
+    // STEP 2: Branch order is preserved in the combined sheet.
     const targetBranches = branches.filter(b => selectedBranches.includes(b.id));
     const workbook = new ExcelJS.Workbook();
     
@@ -193,7 +187,7 @@ if (sortedDays.length > 0) {
 
         // 1. إعداد الترويسة وعناوين الفروع
         const header = ["المنتج", ...targetBranches.map(b => b.name), "الإجمالي العام"];
-        const titleRowData = [`--- تقرير الفروع - ${selectedMonth} - ${fieldLabel} ---`];
+        const titleRowData = [`--- تقرير الفروع - ${reportPeriod} - ${fieldLabel} ---`];
 
         // 2. جلب كافة صفوف البيانات وترتيبها تلقائياً بدون أي فلترة للمنتجات
         const sortedLinkIds = Object.keys(aggregatedData).sort((a, b) =>
@@ -344,7 +338,8 @@ if (sortedDays.length > 0) {
 
     // إعداد اسم الملف النهائي والتحميل المباشر
     let fieldsName = selectedFields.length === 1 ? `_${fieldOptions.find(f => f.value === selectedFields[0])?.label}` : `_بيانات_متعددة`;
-    const fileName = `Global_Report${fieldsName}_${selectedMonth}.xlsx`;
+    // STEP 3: The filename identifies the exact day when one was selected.
+    const fileName = `Global_Report${fieldsName}_${reportPeriod}.xlsx`;
 
     try {
         const buffer = await workbook.xlsx.writeBuffer();
@@ -354,10 +349,17 @@ if (sortedDays.length > 0) {
         console.error("خطأ أثناء تصدير ملف إكسيل الشامل:", error);
     }
 };
+/**
+ * Exports one worksheet per branch for the processed period.
+ * 1. Refuse totals from a different selection.
+ * 2. Build each branch worksheet with its chosen fields.
+ * 3. Save a file named for the processed day or month.
+ */
 const handleExport2 = async () => {
-    // شرط الأمان الأساسي لمنع التصدير في حال عدم وجود بيانات
-    if (Object.keys(aggregatedData).length === 0 || selectedBranches.length === 0 || selectedFields.length === 0) return;
+    // STEP 1: Filter changes require a fresh processing run.
+    if (!canExport || Object.keys(aggregatedData).length === 0 || selectedBranches.length === 0 || selectedFields.length === 0) return;
 
+    // STEP 2: The supplied branch order also controls worksheet order.
     const targetBranches = branches.filter(b => selectedBranches.includes(b.id));
     const workbook = new ExcelJS.Workbook();
 
@@ -372,7 +374,7 @@ const handleExport2 = async () => {
         const fieldLabels = selectedFields.map(f => fieldOptions.find(opt => opt.value === f)?.label || f);
         const header = ["المنتج", ...fieldLabels]; // ❌ تم إزالة "الإجمالي العام" من هنا
         
-        const titleRowData = [`--- تقرير فرع: ${branch.name} - لشهر: ${selectedMonth} ---`];
+        const titleRowData = [`--- تقرير فرع: ${branch.name} - ${selectedDay ? 'ليوم' : 'لشهر'}: ${reportPeriod} ---`];
         combinedData.push(titleRowData);
         combinedData.push(header);
 
@@ -403,7 +405,7 @@ const handleExport2 = async () => {
                 else if (field === 'remaining' || field === 'المتبقي' || field === 'closeStock') {
                     val = prodBranchData.remaining_pure !== undefined ? prodBranchData.remaining_pure : (prodBranchData[field] || 0);
                 } 
-                // 📝 3. بقية الأعمدة تظل تجميعية للشهر كامل كما هي
+                // Other fields contain totals for the chosen day or month.
                 else {
                     val = prodBranchData[field] || 0;
                 }
@@ -500,7 +502,8 @@ const handleExport2 = async () => {
     if (workbook.worksheets.length === 0) return;
 
     let fieldsName = selectedFields.length === 1 ? `_${fieldOptions.find(f => f.value === selectedFields[0])?.label}` : `_حقول_متعددة`;
-    const fileName = `تقرير_جرد_الفروع${fieldsName}_${selectedMonth}.xlsx`;
+    // STEP 3: The filename identifies the exact day when one was selected.
+    const fileName = `تقرير_جرد_الفروع${fieldsName}_${reportPeriod}.xlsx`;
 
     try {
         const buffer = await workbook.xlsx.writeBuffer();
@@ -570,8 +573,8 @@ const handleExport2 = async () => {
         }}>
             <div style={{ marginBottom: '2rem', borderBottom: '2px solid #f1f5f9', paddingBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
-                    <h2 style={{ margin: 0, color: 'hsl(var(--color-primary))', fontSize: '1.5rem' }}>التقرير الشهري الشامل لكافة الفروع</h2>
-                    <p style={{ margin: '5px 0 0', color: '#64748b' }}>عرض وتصدير إحصائيات المنتجات عبر جميع فروع المملكة</p>
+                    <h2 style={{ margin: 0, color: 'hsl(var(--color-primary))', fontSize: '1.5rem' }}>{selectedDay ? 'التقرير اليومي الشامل لكافة الفروع' : 'التقرير الشهري الشامل لكافة الفروع'}</h2>
+                    <p style={{ margin: '5px 0 0', color: '#64748b' }}>عرض وتصدير إحصائيات المنتجات عبر الفروع المختارة</p>
                 </div>
                 <button onClick={onClose} style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: '1.5rem', color: '#94a3b8' }}>&times;</button>
             </div>
@@ -583,10 +586,30 @@ const handleExport2 = async () => {
                         type="month"
                         className="input-field"
                         value={selectedMonth}
-                        onChange={(e) => setSelectedMonth(e.target.value)}
+                        onChange={(e) => {
+                            setSelectedMonth(e.target.value);
+                            setSelectedDay('');
+                        }}
                         disabled={isProcessing}
                         style={{ padding: '0.75rem', borderRadius: '8px' }}
                     />
+                </div>
+
+                <div className="input-group" style={{ marginBottom: 0 }}>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: '600', color: '#475569' }}>تاريخ التقرير (اختياري)</label>
+                    <input
+                        type="date"
+                        className="input-field"
+                        value={selectedDay}
+                        onChange={(e) => {
+                            const day = e.target.value;
+                            setSelectedDay(day);
+                            if (day) setSelectedMonth(day.slice(0, 7));
+                        }}
+                        disabled={isProcessing}
+                        style={{ padding: '0.75rem', borderRadius: '8px' }}
+                    />
+                    <small style={{ color: '#64748b' }}>اتركه فارغًا لتقرير الشهر كاملًا</small>
                 </div>
 
                 <div className="input-group" style={{ marginBottom: 0 }}>
@@ -616,13 +639,7 @@ const handleExport2 = async () => {
                             />
                             تحديد الكل (كافة المدن)
                         </label>
-                        {branches
-                            .filter(b => {
-                                if (cityFilter === 'all') return true;
-                                if (cityFilter === 'ryad') return b.city === 'ryad' || !b.city;
-                                return b.city === cityFilter;
-                            })
-                            .map(b => (
+                        {reportBranchesForCity(branches, cityFilter).map(b => (
                                 <label key={b.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 0', fontSize: '0.85rem' }}>
                                     <input
                                         type="checkbox"
@@ -707,11 +724,11 @@ const handleExport2 = async () => {
                 </div>
             )}
 
-            {completed && (
+            {canExport && (
                 <div style={{ textAlign: 'center', padding: '2rem', backgroundColor: '#ecfdf5', borderRadius: '12px', border: '1px solid #a7f3d0' }}>
                     <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>✅</div>
                     <h3 style={{ color: '#065f46', margin: '0 0 0.5rem 0' }}>اكتملت معالجة البيانات بنجاح!</h3>
-                    <p style={{ color: '#047857', marginBottom: '1.5rem' }}>تم تجميع وإجراء الحسابات لكافة المنتجات لعدد {selectedBranches.length} فرع ولعدد {selectedFields.length} نوع(أنواع) بيانات.</p>
+                    <p style={{ color: '#047857', marginBottom: '1.5rem' }}>تم تجميع بيانات {selectedDay ? `يوم ${selectedDay}` : `شهر ${selectedMonth}`} لعدد {selectedBranches.length} فرع ولعدد {selectedFields.length} نوع(أنواع) بيانات.</p>
                     <button
                         onClick={handleExport}
                         className="btn"

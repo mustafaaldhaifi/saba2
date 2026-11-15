@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DashboardLayout from '../../layouts/DashboardLayout';
 import { RESPONSE_STATUS, SURVEY_STATUS, formatMonth, getCurrentMonth } from './surveyConstants';
-import { createSurvey, deleteSurveyMonth, deleteSurveyPermanently, getBranches, getResponsesForSurvey, getSurveyAccessOverrides, getSurveys, grantSurveyAccess, resetBranchSurveyResponse, updateSurvey, updateSurveyStatus } from './surveyService';
+import { createSurvey, deleteSurveyMonth, deleteSurveyPermanently, getBranches, getResponsesForSurvey, getSurveyAccessOverrides, getSurveys, resetBranchSurveyResponse, updateSurvey, updateSurveyStatus } from './surveyService';
 import { auth } from '../../config/firebase';
 import SurveyEditor from './SurveyEditor';
 import SurveyResponseDetailsModal from './SurveyResponseDetailsModal';
@@ -11,15 +11,15 @@ import SurveyFieldPdfDocument from './SurveyFieldPdfDocument';
 import { createSurveyFieldsWorkbook } from './surveyFieldExcel';
 import { createSurveyInventoryWorkbook } from './surveyInventoryExcel';
 import { saveAs } from 'file-saver';
-import { getExpiredOccurrences, getLatestDueOccurrence, getResponseMonth, getSurveyMonitoringMonths, getSurveySchedule, getZonedDateTime, listDueOccurrencesInMonth, occurrenceDateOfResponse, scheduledDateTime, SURVEY_TIMEZONE } from './surveySchedule';
+import { getExpiredOccurrences, getLatestDueOccurrence, getResponseMonth, getSurveyMonitoringMonths, getSurveySchedule, listDueOccurrencesInMonth, occurrenceDateOfResponse } from './surveySchedule';
 import './survey.css';
 
 const statusLabel = { active: 'نشط', paused: 'موقوف', archived: 'مؤرشف' };
 
 /**
- * Manages survey definitions, responses, and missed-deadline access grants.
+ * Manages survey definitions, responses, and missed deadlines.
  * 1. Load surveys and branch answers.
- * 2. Show missed occurrences and allow administrators to reopen one.
+ * 2. Show missed occurrences while general attempts are managed with branches.
  * 3. Keep the existing answer review and export actions available.
  */
 const SurveysDashboard = () => {
@@ -43,8 +43,6 @@ const SurveysDashboard = () => {
   const [resettingResponseId, setResettingResponseId] = useState('');
   const [deletingSurveyId, setDeletingSurveyId] = useState('');
   const [accessOverrides, setAccessOverrides] = useState([]);
-  const [unlockUntil, setUnlockUntil] = useState({});
-  const [grantingBranchId, setGrantingBranchId] = useState('');
   const [statusTick, setStatusTick] = useState(0);
   const statusNow = new Date();
   const pdfRef = useRef(null);
@@ -113,30 +111,9 @@ const SurveysDashboard = () => {
     const missed = getExpiredOccurrences(selectedSurvey, responses.filter((response) => response.branchId === branch.id), statusNow);
     if (!missed.length) return [];
     const occurrenceDate = missed[0];
-    const grant = accessOverrides.find((item) => item.branchId === branch.id && item.occurrenceDate === occurrenceDate);
-    return [{ branch, occurrenceDate, reopened: !!grant?.expiresAt?.toDate && grant.expiresAt.toDate() > statusNow }];
+    const grant = accessOverrides.find((item) => item.branchId === branch.id && item.occurrenceDate === occurrenceDate && !item.cancelledAt);
+    return [{ branch, occurrenceDate, reopened: branch.ban == null && !!grant?.expiresAt?.toDate && grant.expiresAt.toDate() > statusNow }];
   }) : [];
-
-  /**
-   * Reopens one missed occurrence until an administrator-selected Riyadh time.
-   * 1. Convert the chosen local date and time to an instant.
-   * 2. Save and refresh the grant, then report the new deadline.
-   */
-  const reopenSurvey = async (item) => {
-    try {
-      // STEP 1: Interpret the input in the survey's stated timezone.
-      setGrantingBranchId(item.branch.id);
-      const fallback = `${getZonedDateTime(new Date(Date.now() + 86_400_000)).date}T23:59`;
-      const [date, time] = (unlockUntil[item.branch.id] || fallback).split('T');
-      const expiresAt = scheduledDateTime(date, { timezone: SURVEY_TIMEZONE, startTime: time });
-      // STEP 2: Update only this branch and occurrence's grant.
-      await grantSurveyAccess({ surveyId: selectedSurvey.id, branchId: item.branch.id,
-        occurrenceDate: item.occurrenceDate, expiresAt, userId: auth.currentUser?.uid || null });
-      setAccessOverrides(await getSurveyAccessOverrides(selectedSurvey.id));
-      setMessage(`تم فتح التقييد لفرع ${item.branch.name || item.branch.id} حتى ${date} ${time} بتوقيت الرياض.`);
-    } catch (error) { setMessage(error.message || 'تعذر فتح التقييد.'); console.error(error); }
-    finally { setGrantingBranchId(''); }
-  };
 
   const saveSurvey = async (form) => {
     try {
@@ -313,10 +290,9 @@ const SurveysDashboard = () => {
     </article>)}</div>}</section>
 
     <section className="survey-monitor card"><div className="survey-section-heading"><div><h2>متابعة الفروع حسب الشهر</h2><p>اضغط على الشهر لرؤية كل موعد وإجابة الفرع.</p></div>{surveys.length > 0 && <select className="input-field survey-select" value={selectedSurveyId} onChange={(event) => { setSelectedSurveyId(event.target.value); setSelectedResponse(null); setSelectedCell(null); }}><option value="" disabled>اختر الاستبيان</option>{surveys.map((survey) => <option key={survey.id} value={survey.id}>{survey.title}</option>)}</select>}</div>
-      {!responsesLoading && restrictedBranches.length > 0 && <div className="survey-restrictions"><h3>الفروع المقيّدة لهذا الاستبيان</h3>{restrictedBranches.map((item) => <div className="survey-restriction-row" key={item.branch.id}>
-        <strong>{item.branch.name || item.branch.id}</strong><span>موعد {item.occurrenceDate} · {item.reopened ? 'مفتوح للتعبئة' : 'مقيّد'}</span>
-        <label>فتح حتى (بتوقيت الرياض)<input className="input-field" type="datetime-local" value={unlockUntil[item.branch.id] || `${getZonedDateTime(new Date(Date.now() + 86_400_000)).date}T23:59`} onChange={(event) => setUnlockUntil((current) => ({ ...current, [item.branch.id]: event.target.value }))} /></label>
-        <button type="button" className="btn survey-secondary" disabled={!!grantingBranchId} onClick={() => reopenSurvey(item)}>{grantingBranchId === item.branch.id ? 'جارٍ الفتح...' : item.reopened ? 'تجديد المهلة' : 'فتح التقييد'}</button>
+      {!responsesLoading && restrictedBranches.length > 0 && <div className="survey-restrictions"><h3>المواعيد المتأخرة لهذا الاستبيان</h3>{restrictedBranches.map((item) => <div className="survey-restriction-row" key={item.branch.id}>
+        <strong>{item.branch.name || item.branch.id}</strong><span>موعد {item.occurrenceDate} · {item.reopened ? 'مفتوح للتعبئة' : item.branch.ban == null ? 'غير محظور' : 'محظور'}</span>
+        <span>تُدار المحاولات الإضافية من قسم الفروع.</span>
       </div>)}</div>}
       {responsesLoading && <p>جاري تحميل الإجابات...</p>}
       {selectedSurvey && (months.length ? <div className="survey-table-wrap"><table className="survey-monitor-table"><thead><tr><th>الفرع</th>{months.map((month) => <th key={month}>{formatMonth(month)}</th>)}</tr></thead><tbody>{visibleBranches.map((branch) => <tr key={branch.id}><td>{branch.name || branch.id}</td>{months.map((month) => { const dates = getCellDates(branch.id, month); const completed = dates.filter((date) => getResponse(branch.id, date)?.status === RESPONSE_STATUS.SUBMITTED).length; const state = dates.length === 0 ? 'not-applicable' : completed === dates.length ? 'submitted' : 'pending'; return <td key={month}>{dates.length ? <button type="button" className={`survey-response-state survey-state-button ${state}`} onClick={() => setSelectedCell({ branch, month })}>{completed} / {dates.length} تم</button> : <span className="survey-response-state not-applicable">—</span>}</td>; })}</tr>)}</tbody></table></div> : <p role="status">لم يبدأ موعد هذا الاستبيان بعد.</p>)}

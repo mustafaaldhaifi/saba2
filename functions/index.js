@@ -1,4 +1,5 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { initializeApp } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
@@ -112,7 +113,7 @@ exports.manageBranch = onCall({ region: 'asia-east1', maxInstances: 10 }, async 
     }
     try {
       const reference = database.collection('branches').doc();
-      await reference.set({ name, loginName, city, hideDailyStockColumns, authUid: user.uid, status: 'active',
+      await reference.set({ name, loginName, city, hideDailyStockColumns, authUid: user.uid, status: 'active', ban: null,
         createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
       return { id: reference.id, email };
     } catch (error) {
@@ -147,4 +148,42 @@ exports.manageBranch = onCall({ region: 'asia-east1', maxInstances: 10 }, async 
   await reference.update({ status: 'archived', archivedAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp() });
   return { id, archived: true };
+});
+
+/**
+ * Closes expired branch attempts and restores their unresolved bans.
+ * 1. Find active attempts using the shared scheduled job.
+ * 2. Recheck each attempt, branch, and source history in a transaction.
+ * 3. Mark the attempt expired and append a new ban event when the branch is still open.
+ */
+exports.expireBanAttempts = onSchedule({ schedule: 'every 5 minutes', region: 'asia-east1', maxInstances: 1 }, async () => {
+  // STEP 1: Only currently active attempts can expire.
+  const database = getFirestore();
+  const attempts = await database.collection('banAttempts').where('status', '==', 'active').get();
+  for (const attempt of attempts.docs) {
+    if (attempt.data().expiresAt?.toMillis() > Date.now()) continue;
+    try {
+      // STEP 2: A direct release, completed action, or newer ban must win over expiry.
+      await database.runTransaction(async (transaction) => {
+        const attemptDoc = await transaction.get(attempt.ref);
+        if (attemptDoc.data()?.status !== 'active' || attemptDoc.data().expiresAt?.toMillis() > Date.now()) return;
+        const branchRef = database.collection('branches').doc(attempt.id);
+        const historyRef = database.collection('bansHistory').doc(attemptDoc.data().sourceBanId);
+        const [branch, source] = await Promise.all([transaction.get(branchRef), transaction.get(historyRef)]);
+        transaction.update(attempt.ref, { status: 'expired', closedAt: FieldValue.serverTimestamp() });
+        // STEP 3: Keep another active reason intact if it replaced this attempt.
+        if (branch.exists && branch.data().status !== 'archived' && branch.data().ban == null && source.exists) {
+          transaction.update(branchRef, { ban: source.data().message });
+          transaction.create(database.collection('bansHistory').doc(), {
+            branchId: attempt.id,
+            banItemId: source.data().banItemId,
+            message: source.data().message,
+            bannedAt: FieldValue.serverTimestamp(),
+          });
+        }
+      });
+    } catch (error) {
+      console.error('Unable to expire ban attempt:', attempt.id, error);
+    }
+  }
 });

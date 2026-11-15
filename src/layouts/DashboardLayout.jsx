@@ -1,15 +1,27 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { logoutUser } from '../features/auth/authService';
-import { auth, db } from '../config/firebase'; // Added db import
+import { auth } from '../config/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
-import { collection, query, where, getDocs, doc, getDoc } from "firebase/firestore"; // Added firestore imports
 
+/**
+ * Render the dashboard shell and navigate between its existing sections.
+ * 1. Track sidebar state and the current location.
+ * 2. Build role-specific navigation, including the constraint subitems.
+ * 3. Render the sidebar and page content.
+ */
 const DashboardLayout = ({ children, title, role }) => {
+    // STEP 1: Track sidebar state and location.
     const navigate = useNavigate();
     const location = useLocation();
+    const constraintLocationKey = location.pathname + location.search;
+    const isConstraintsLocation = location.pathname === '/admin' && new URLSearchParams(location.search).get('tab') === 'constraints';
     const [isSidebarOpen, setIsSidebarOpen] = useState(false); // Mobile state
     const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false); // Desktop state
+    const [constraintsMenuState, setConstraintsMenuState] = useState({ locationKey: constraintLocationKey, expanded: isConstraintsLocation });
+    // NOTE: A location change restores the menu's default state without an extra render.
+    const isConstraintsExpanded = constraintsMenuState.locationKey === constraintLocationKey
+        ? constraintsMenuState.expanded : isConstraintsLocation;
     const [userName, setUserName] = useState('');
     const [userCity, setUserCity] = useState(''); // New state for city
 
@@ -79,11 +91,15 @@ const DashboardLayout = ({ children, title, role }) => {
         setIsSidebarCollapsed(!isSidebarCollapsed);
     };
 
+    // STEP 2: Keep both constraint sections under the existing sidebar item.
     const menuItems = role === 'admin' ? [
         { label: 'الاستبيانات', path: '/admin/surveys', icon: '📝' },
         { label: 'الرئيسية', path: '/admin', icon: '🏠' },
         { label: 'إدارة المنتجات', path: '/admin?tab=products', icon: '📦' },
-        { label: 'القيود', path: '/admin?tab=constraints', icon: '🔒' },
+        { label: 'القيود', path: '/admin?tab=constraints', icon: '🔒', children: [
+            { label: 'قيود المنتجات', path: '/admin?tab=constraints&section=products', icon: '📦', section: 'products' },
+            { label: 'قيود طلبيات وجرد', path: '/admin?tab=constraints&section=orders', icon: '📋', section: 'orders' }
+        ] },
         { label: 'التقارير', path: '/admin?tab=reports', icon: '📊' },
         { label: 'الفروع', path: '/admin/branches', icon: '🏢' },
         { label: 'الإعدادات', path: '/admin/settings', icon: '⚙️' },
@@ -93,6 +109,11 @@ const DashboardLayout = ({ children, title, role }) => {
     ];
 
     const isItemActive = (item) => {
+        if (item.children) return isConstraintsLocation;
+        if (item.section) {
+            const params = new URLSearchParams(location.search);
+            return isConstraintsLocation && (params.get('section') || 'products') === item.section;
+        }
         if (item.path.includes('?')) {
             return location.pathname + location.search === item.path;
         }
@@ -102,6 +123,7 @@ const DashboardLayout = ({ children, title, role }) => {
         return location.pathname === item.path;
     };
 
+    // STEP 3: Render the navigation and current page.
     return (
         <div className="dashboard-container">
             {/* Mobile Overlay */}
@@ -136,7 +158,7 @@ const DashboardLayout = ({ children, title, role }) => {
                     </button>
                 </div>
 
-                <nav style={{ flex: 1, padding: '1.5rem 0.5rem' }}>
+                <nav style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '1.5rem 0.5rem' }}>
                     <ul style={{ listStyle: 'none' }}>
                         {menuItems.map((item, index) => {
                             const active = isItemActive(item);
@@ -145,10 +167,17 @@ const DashboardLayout = ({ children, title, role }) => {
                                 <button
                                     className="sidebar-link"
                                     onClick={() => {
+                                        if (item.children) {
+                                            setIsSidebarCollapsed(false);
+                                            setConstraintsMenuState({ locationKey: constraintLocationKey, expanded: !isConstraintsExpanded });
+                                            return;
+                                        }
                                         navigate(item.path);
                                         setIsSidebarOpen(false); // Close on selection (mobile)
                                     }}
                                     title={item.label}
+                                    aria-expanded={item.children ? isConstraintsExpanded : undefined}
+                                    aria-controls={item.children && isConstraintsExpanded ? 'constraints-submenu' : undefined}
                                     style={{
                                         width: '100%',
                                         textAlign: 'right',
@@ -167,7 +196,23 @@ const DashboardLayout = ({ children, title, role }) => {
                                 >
                                     <span style={{ fontSize: '1.2rem' }}>{item.icon}</span>
                                     <span className="sidebar-link-text" style={{ whiteSpace: 'nowrap' }}>{item.label}</span>
+                                    {item.children && <span className="sidebar-link-text" aria-hidden="true" style={{ marginRight: 'auto' }}>{isConstraintsExpanded ? '▴' : '▾'}</span>}
                                 </button>
+                                {item.children && isConstraintsExpanded && (
+                                    <ul id="constraints-submenu" className="sidebar-submenu">
+                                        {item.children.map(child => (
+                                            <li key={child.section}>
+                                                <button type="button" className={`sidebar-submenu-link ${isItemActive(child) ? 'is-active' : ''}`} onClick={() => {
+                                                    navigate(child.path);
+                                                    setIsSidebarOpen(false);
+                                                }}>
+                                                    <span aria-hidden="true">{child.icon}</span>
+                                                    <span>{child.label}</span>
+                                                </button>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
                             </li>
                             );
                         })}

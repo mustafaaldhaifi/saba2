@@ -1,5 +1,4 @@
 import {
-  addDoc,
   collection,
   deleteDoc,
   doc,
@@ -34,6 +33,37 @@ export const updateCachedSurveyResponse = (response) => {
 
 const responseId = (surveyId, branchId, occurrenceDate) => `${surveyId}__${branchId}__${occurrenceDate}`;
 const overrideId = responseId;
+const attemptMatchesSurvey = (source, surveyId, occurrenceDate) =>
+  source?.banItemId === `survey_${surveyId}` && source.message?.endsWith(` بتاريخ ${occurrenceDate}`);
+
+/**
+ * Records one expired survey occurrence without reinstating an admin-cleared event.
+ * 1. Read its branch, catalog item, and deterministic history record.
+ * 2. Preserve an existing status or write the new ban and history together.
+ */
+const applyMissedSurveyBan = async (branchId, survey, occurrenceDate, eventKey = '') => {
+  // STEP 1: A later expired access grant is a separate ban event.
+  const itemId = `survey_${survey.id}`;
+  const historyId = `${branchId}__${itemId}__${occurrenceDate}${eventKey ? `__${eventKey}` : ''}`;
+  const branchRef = doc(db, 'branches', branchId);
+  const itemRef = doc(db, 'banItems', itemId);
+  const historyRef = doc(db, 'bansHistory', historyId);
+  const message = `تأخر الاستبيان «${survey.title}» بتاريخ ${occurrenceDate}`;
+  return runTransaction(db, async (transaction) => {
+    const [branch, item, history] = await Promise.all([
+      transaction.get(branchRef), transaction.get(itemRef), transaction.get(historyRef),
+    ]);
+    if (!branch.exists() || branch.data().status === 'archived') throw new Error('الفرع غير متاح.');
+    const current = branch.data().ban;
+    // STEP 2: A cleared historical event cannot be applied again on page refresh.
+    if (typeof current === 'string') return current;
+    if (history.exists()) return null;
+    if (!item.exists()) transaction.set(itemRef, { type: 'survey', title: survey.title });
+    transaction.update(branchRef, { ban: message });
+    transaction.set(historyRef, { branchId, banItemId: itemId, message, bannedAt: serverTimestamp() });
+    return message;
+  });
+};
 
 export const getSurveyAccessOverrides = async (surveyId) => {
   const snapshot = await getDocs(query(collection(db, ACCESS_OVERRIDES), where('surveyId', '==', surveyId)));
@@ -43,7 +73,7 @@ export const getSurveyAccessOverrides = async (surveyId) => {
 /**
  * Reopens one expired survey occurrence for an administrator-selected period.
  * 1. Verify the administrator, target branch, expired date, and absence of submission.
- * 2. Save a grant scoped to the survey, branch, and occurrence.
+ * 2. Save the scoped grant and clear its matching current survey ban.
  */
 export const grantSurveyAccess = async ({ surveyId, branchId, occurrenceDate, expiresAt, userId }) => {
   // STEP 1: Reject a grant for another account, active date, or completed answer.
@@ -58,27 +88,58 @@ export const grantSurveyAccess = async ({ surveyId, branchId, occurrenceDate, ex
   if ((await getDoc(doc(db, RESPONSES, responseId(surveyId, branchId, occurrenceDate)))).data()?.status === RESPONSE_STATUS.SUBMITTED) {
     throw new Error('الفرع أرسل هذا الموعد بالفعل.');
   }
-  // STEP 2: Use a stable document ID so extending a grant updates the same occurrence.
-  await setDoc(doc(db, ACCESS_OVERRIDES, overrideId(surveyId, branchId, occurrenceDate)), {
-    surveyId, branchId, occurrenceDate, expiresAt: Timestamp.fromDate(expiresAt),
-    grantedAt: serverTimestamp(), grantedBy: userId,
+  // STEP 2: Reopen the occurrence and clear only its matching survey ban.
+  const branchRef = doc(db, 'branches', branchId);
+  const overrideRef = doc(db, ACCESS_OVERRIDES, overrideId(surveyId, branchId, occurrenceDate));
+  const baseHistoryRef = doc(db, 'bansHistory', `${branchId}__survey_${surveyId}__${occurrenceDate}`);
+  await runTransaction(db, async (transaction) => {
+    const [branch, oldOverride, baseHistory] = await Promise.all([
+      transaction.get(branchRef), transaction.get(overrideRef), transaction.get(baseHistoryRef),
+    ]);
+    if (!branch.exists() || branch.data().status === 'archived') throw new Error('الفرع غير متاح.');
+    const oldExpiry = oldOverride.data()?.expiresAt?.seconds;
+    const reopenedHistory = oldExpiry ? await transaction.get(doc(db, 'bansHistory',
+      `${branchId}__survey_${surveyId}__${occurrenceDate}__grant_${oldExpiry}`)) : null;
+    const matchingBan = [baseHistory, reopenedHistory].some((history) =>
+      history?.exists() && history.data().message === branch.data().ban);
+    if (typeof branch.data().ban === 'string' && !matchingBan) {
+      throw new Error('يوجد حظر آخر على الفرع. أبطله من إدارة الفروع أولًا.');
+    }
+    if (matchingBan) transaction.update(branchRef, { ban: null });
+    transaction.set(overrideRef, {
+      surveyId, branchId, occurrenceDate, expiresAt: Timestamp.fromDate(expiresAt),
+      grantedAt: serverTimestamp(), grantedBy: userId,
+    });
   });
 };
 
 /**
- * Resolves the oldest missed survey for a branch and whether administration reopened it.
- * 1. Read the branch's active surveys, answers, and access grants.
+ * Resolves the branch's current ban or oldest expired survey occurrence.
+ * 1. Read the branch, active surveys, answers, and access grants.
  * 2. Find the earliest unanswered date after its end-of-day deadline.
+ * 3. Respect an existing ban or grant, then record a new missed-survey ban once.
  */
-export const getBranchSurveyRestriction = async (branchId) => {
+export const getBranchSurveyRestriction = async (branchId, knownAttempt) => {
   // STEP 1: Read current documents rather than cached survey or response lists.
+  const branch = await getDoc(doc(db, 'branches', branchId));
+  if (!branch.exists() || branch.data().status === 'archived') throw new Error('الفرع غير متاح.');
+  const currentBan = typeof branch.data().ban === 'string' ? branch.data().ban : null;
+  if (currentBan) return { survey: null, occurrenceDate: null, reopened: false, banMessage: currentBan };
   const [surveys, responses, overrides] = await Promise.all([
     getDocs(query(collection(db, SURVEYS), where('status', '==', SURVEY_STATUS.ACTIVE))),
     getDocs(query(collection(db, RESPONSES), where('branchId', '==', branchId))),
     getDocs(query(collection(db, ACCESS_OVERRIDES), where('branchId', '==', branchId))),
   ]);
+  const attemptData = knownAttempt === undefined
+    ? (await getDoc(doc(db, 'banAttempts', branchId))).data() : knownAttempt;
   const answers = responses.docs.map((item) => ({ id: item.id, ...item.data() }));
-  const grants = overrides.docs.map((item) => item.data());
+  const grants = overrides.docs.map((item) => item.data()).filter((item) => !item.cancelledAt);
+  const activeAttempt = attemptData?.status === 'active' ? attemptData : null;
+  const attemptSource = activeAttempt ? await getDoc(doc(db, 'bansHistory', activeAttempt.sourceBanId)) : null;
+  if (activeAttempt && activeAttempt.expiresAt?.toDate?.() <= new Date()) {
+    return { survey: null, occurrenceDate: null, reopened: false,
+      banMessage: attemptSource?.data()?.message || 'انتهت المحاولة الإضافية. تواصل مع الإدارة.' };
+  }
   // STEP 2: A live grant opens only its named occurrence, not the branch dashboard.
   const missed = surveys.docs.flatMap((item) => {
     const survey = { id: item.id, ...item.data() };
@@ -86,10 +147,26 @@ export const getBranchSurveyRestriction = async (branchId) => {
     return getExpiredOccurrences(survey, answers.filter((answer) => answer.surveyId === survey.id))
       .map((occurrenceDate) => ({ survey, occurrenceDate }));
   }).sort((left, right) => left.occurrenceDate.localeCompare(right.occurrenceDate));
-  const first = missed[0];
+  if (activeAttempt) {
+    const attemptSurvey = missed.find((item) => attemptMatchesSurvey(attemptSource?.data(), item.survey.id, item.occurrenceDate));
+    return attemptSurvey ? { ...attemptSurvey, reopened: true } : null;
+  }
+  if (!missed.length) return null;
+  const history = await getDocs(query(collection(db, 'bansHistory'), where('branchId', '==', branchId)));
+  const recordedBans = new Set(history.docs.map((item) => item.id));
+  const first = missed.find((item) => {
+    const grant = grants.find((entry) => entry.surveyId === item.survey.id && entry.occurrenceDate === item.occurrenceDate);
+    if (grant?.expiresAt?.toDate && grant.expiresAt.toDate() > new Date()) return true;
+    const eventKey = grant?.expiresAt?.seconds ? `__grant_${grant.expiresAt.seconds}` : '';
+    return !recordedBans.has(`${branchId}__survey_${item.survey.id}__${item.occurrenceDate}${eventKey}`);
+  });
   if (!first) return null;
   const grant = grants.find((item) => item.surveyId === first.survey.id && item.occurrenceDate === first.occurrenceDate);
-  return { ...first, reopened: !!grant?.expiresAt?.toDate && grant.expiresAt.toDate() > new Date() };
+  if (grant?.expiresAt?.toDate && grant.expiresAt.toDate() > new Date()) return { ...first, reopened: true };
+  // STEP 3: A recorded event stays cleared until a new deadline or grant expiry.
+  const eventKey = grant?.expiresAt?.seconds ? `grant_${grant.expiresAt.seconds}` : '';
+  const banMessage = await applyMissedSurveyBan(branchId, first.survey, first.occurrenceDate, eventKey);
+  return banMessage ? { ...first, reopened: false, banMessage } : null;
 };
 
 export const getBranches = async () => {
@@ -109,14 +186,22 @@ export const getSurveys = async () => {
   return surveyCache.value;
 };
 
+/**
+ * Creates a survey and its corresponding ban catalog item.
+ * 1. Normalize the questions and allocate a stable survey ID.
+ * 2. Save the survey and ban item in one batch.
+ */
 export const createSurvey = async ({ title, description, kind = 'documents', targetBranchIds, questions, schedule }) => {
+  // STEP 1: Keep the ban item ID tied to the survey's permanent document ID.
   surveyCache.expiresAt = 0;
   const cleanQuestions = (kind === 'inventory' ? [] : questions).map((question) => ({
     ...question,
     label: question.label.trim(),
   }));
-
-  return addDoc(collection(db, SURVEYS), {
+  const reference = doc(collection(db, SURVEYS));
+  // STEP 2: A survey never becomes active without its catalog item.
+  const batch = writeBatch(db);
+  batch.set(reference, {
     title: title.trim(),
     description: description.trim(),
     kind,
@@ -131,9 +216,18 @@ export const createSurvey = async ({ title, description, kind = 'documents', tar
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
+  batch.set(doc(db, 'banItems', `survey_${reference.id}`), { type: 'survey', title: title.trim() });
+  await batch.commit();
+  return reference;
 };
 
+/**
+ * Updates a survey and keeps its ban catalog title aligned.
+ * 1. Compute the revised questions, schedule, and version.
+ * 2. Save the survey and its catalog item together.
+ */
 export const updateSurvey = async (survey, changes) => {
+  // STEP 1: Preserve the existing survey version and schedule history rules.
   surveyCache.expiresAt = 0;
   const kind = changes.kind || 'documents';
   const questions = (kind === 'inventory' ? [] : changes.questions).map((question) => ({ ...question, label: question.label.trim() }));
@@ -143,7 +237,9 @@ export const updateSurvey = async (survey, changes) => {
     ...(survey.scheduleHistory || []),
     { ...getSurveySchedule(survey), endDate: changes.schedule.startDate },
   ] : survey.scheduleHistory || [];
-  await updateDoc(doc(db, SURVEYS, survey.id), {
+  // STEP 2: Retain the same catalog ID across survey edits.
+  const batch = writeBatch(db);
+  batch.update(doc(db, SURVEYS, survey.id), {
     title: changes.title.trim(),
     description: changes.description.trim(),
     kind,
@@ -156,6 +252,8 @@ export const updateSurvey = async (survey, changes) => {
     version: (survey.version || 1) + (questionsChanged || scheduleChanged || kind !== (survey.kind || 'documents') ? 1 : 0),
     updatedAt: serverTimestamp(),
   });
+  batch.set(doc(db, 'banItems', `survey_${survey.id}`), { type: 'survey', title: changes.title.trim() });
+  await batch.commit();
 };
 
 export const updateSurveyStatus = async (surveyId, status) => {
@@ -200,7 +298,8 @@ export const getSurveyResponse = async ({ surveyId, branchId, occurrenceDate, al
 /**
  * Saves the selected response only while its occurrence is open to this branch.
  * 1. Re-read the survey and check its current or administrator-reopened deadline.
- * 2. Validate submitted answers and save the response under its stable ID.
+ * 2. Validate submitted answers and prepare the response under its stable ID.
+ * 3. Save the response and consume a matching general attempt atomically.
  */
 export const saveSurveyResponse = async ({ survey, branchId, userId, answers, status }) => {
   // STEP 1: The branch must still be targeted and within the permitted period.
@@ -215,9 +314,15 @@ export const saveSurveyResponse = async ({ survey, branchId, userId, answers, st
   if (liveSurvey.kind === 'inventory') throw new Error('استبيان الجرد يُرسل من صفحة جرد الفرع المخصصة.');
   const liveSchedule = getScheduleForOccurrence(liveSurvey, occurrenceDate);
   const expired = liveSchedule.endOfDay && occurrenceDate < getZonedDateTime(new Date(), liveSchedule.timezone).date;
+  const attemptRef = doc(db, 'banAttempts', branchId);
+  let hasGeneralAttempt = false;
   if (expired) {
     const grant = await getDoc(doc(db, ACCESS_OVERRIDES, overrideId(survey.id, branchId, occurrenceDate)));
-    if (!grant.exists() || !grant.data().expiresAt?.toDate || grant.data().expiresAt.toDate() <= new Date()) {
+    const attempt = await getDoc(attemptRef);
+    const source = attempt.data()?.status === 'active' ? await getDoc(doc(db, 'bansHistory', attempt.data().sourceBanId)) : null;
+    hasGeneralAttempt = attempt.data()?.status === 'active' && attempt.data().expiresAt?.toDate?.() > new Date() &&
+      attemptMatchesSurvey(source?.data(), survey.id, occurrenceDate);
+    if (!hasGeneralAttempt && (!grant.exists() || grant.data().cancelledAt || !grant.data().expiresAt?.toDate || grant.data().expiresAt.toDate() <= new Date())) {
       throw new Error('انتهت مهلة الإدخال. تم تقييد حسابك لعدم الالتزام بمواعيد الإدخال.');
     }
   } else if (occurrenceDate !== getLatestDueOccurrence(liveSurvey)) {
@@ -244,7 +349,7 @@ export const saveSurveyResponse = async ({ survey, branchId, userId, answers, st
     })),
   };
 
-  await setDoc(reference, {
+  const responseData = {
     surveyId: survey.id,
     branchId,
     month,
@@ -259,7 +364,28 @@ export const saveSurveyResponse = async ({ survey, branchId, userId, answers, st
       submittedBy: userId,
     } : {}),
     ...(!existingResponse.exists() ? { createdAt: serverTimestamp() } : {}),
-  }, { merge: true });
+  };
+  if (status !== RESPONSE_STATUS.SUBMITTED) {
+    await setDoc(reference, responseData, { merge: true });
+    return;
+  }
+  // STEP 3: A submitted response consumes its matching general attempt exactly once.
+  await runTransaction(db, async (transaction) => {
+    const [saved, attempt, branch] = await Promise.all([
+      transaction.get(reference), transaction.get(attemptRef), transaction.get(doc(db, 'branches', branchId)),
+    ]);
+    if (saved.data()?.status === RESPONSE_STATUS.SUBMITTED) throw new Error('تم إرسال الاستبيان مسبقًا.');
+    if (!branch.exists() || typeof branch.data().ban === 'string') throw new Error('الفرع محظور حاليًا.');
+    let matches = false;
+    if (attempt.data()?.status === 'active') {
+      const source = await transaction.get(doc(db, 'bansHistory', attempt.data().sourceBanId));
+      matches = attemptMatchesSurvey(source.data(), survey.id, occurrenceDate);
+      if (matches && attempt.data().expiresAt?.toDate?.() <= new Date()) throw new Error('انتهت المحاولة الإضافية.');
+    }
+    if (hasGeneralAttempt && !matches) throw new Error('لم تعد المحاولة الإضافية متاحة.');
+    transaction.set(reference, responseData, { merge: true });
+    if (matches) transaction.update(attemptRef, { status: 'used', closedAt: serverTimestamp() });
+  });
 };
 
 export const correctSurveyResponse = async ({ response, survey, answers, userId }) => {

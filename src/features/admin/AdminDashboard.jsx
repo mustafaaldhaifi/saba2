@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import DashboardLayout from '../../layouts/DashboardLayout';
 import { collection, query, where, getDocs, getDoc, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, setDoc, orderBy, Timestamp, writeBatch } from "firebase/firestore";
@@ -8,6 +8,7 @@ import GlobalMonthlyReport from './GlobalMonthlyReport';
 import ProductCorrectionModal from './ProductCorrectionModal';
 import ColumnConstraintsManager from "./ColumnConstraintForm";
 import { CONSTRAINT_CATEGORIES } from './constraintCategories';
+import { reportBranchesForCity, sortReportBranches } from './reportBranches';
 
 // Helper: Calculate Remaining Stock
 // Helper: Calculate Remaining Stock
@@ -51,13 +52,14 @@ const calculateRemaining = (reports, product) => {
 
 /**
  * Coordinate the administration views and their shared data.
- * 1. Track the active view and shared selections.
- * 2. Load branches, products, reports, and constraint product choices.
+ * 1. Track the active view, constraint section, and separate report city selection.
+ * 2. Load branches, products, reports, and product constraint choices when needed.
  * 3. Render the selected view and its existing editing tools.
  */
 const AdminDashboard = () => {
     // STEP 1: Track the active view and shared selections.
     const [selectedCity, setSelectedCity] = useState('ryad'); // Default to ryad
+    const [reportCity, setReportCity] = useState('ryad');
     const [selectedBranch, setSelectedBranch] = useState('');
     const [selectedOrderType, setSelectedOrderType] = useState('');
     const [openingStockData, setOpeningStockData] = useState([]);
@@ -89,9 +91,11 @@ const AdminDashboard = () => {
     const navigate = useNavigate();
     const searchParams = new URLSearchParams(location.search);
     const tabFromUrl = searchParams.get('tab') || 'home';
+    const constraintSection = searchParams.get('section') === 'orders' ? 'orders' : 'products';
 
     // Active View State (home | products | constraints | reports)
     const [activeTab, setActiveTabState] = useState(tabFromUrl);
+    const productCity = activeTab === 'reports' ? reportCity : selectedCity;
 
     useEffect(() => {
         if (tabFromUrl !== activeTab) {
@@ -110,9 +114,29 @@ const AdminDashboard = () => {
         setShowCorrectionStandalone(true);
     };
 
+    /**
+     * Changes the report city without changing product or constraint filters.
+     * 1. Clear branch-specific selections and cached report rows.
+     * 2. Close reports opened under the previous city scope.
+     */
+    const handleReportCityChange = city => {
+        // STEP 1: A previous branch and date cannot apply to the new scope.
+        setReportCity(city);
+        setSelectedBranch('');
+        setSelectedReportDate('');
+        setReportDates([]);
+        setDailyReportData([]);
+        setOpeningStockData([]);
+
+        // STEP 2: Reopen a report with the new branch scope when requested.
+        setShowMonthlyReport(false);
+        setShowGlobalMonthlyReport(false);
+    };
+
     // Data
     const [orderTypes, setOrderTypes] = useState([]);
     const [branches, setBranches] = useState([]); // Dynamic
+    const sortedReportBranches = useMemo(() => sortReportBranches(branches), [branches]);
     const [products, setProducts] = useState([]);
     const [constraintProducts, setConstraintProducts] = useState([]);
     const [constraintProductsCity, setConstraintProductsCity] = useState(null);
@@ -193,15 +217,42 @@ const AdminDashboard = () => {
         fetchData();
     }, []);
 
-    // 2. Fetch Products (Standard)
     useEffect(() => {
+        let active = true;
+        /**
+         * Loads products for the active city scope and order type.
+         * 1. Clear stale products when no type is selected.
+         * 2. Read both cities for the all-city report without a city cache marker.
+         * 3. Reuse and refresh the existing city-specific product cache.
+         */
         const fetchProducts = async () => {
+            // STEP 1: Do not show products from a previous type.
             if (!selectedOrderType) {
                 setProducts([]);
+                setLoadingProducts(false);
                 return;
             }
 
-            const cacheKey = `products_${selectedCity}_${selectedOrderType}`;
+            // STEP 2: The combined report needs products from both cities.
+            if (productCity === 'all') {
+                setProducts([]);
+                setLoadingProducts(true);
+                try {
+                    const snapshot = await getDocs(query(collection(db, 'products'),
+                        where('typeId', '==', selectedOrderType)));
+                    const items = snapshot.docs.map(product => ({ id: product.id, ...product.data() }));
+                    items.sort((left, right) => (left.sortOrder || 0) - (right.sortOrder || 0));
+                    if (active) setProducts(items);
+                } catch (error) {
+                    console.error('Error fetching all-city report products:', error);
+                } finally {
+                    if (active) setLoadingProducts(false);
+                }
+                return;
+            }
+
+            // STEP 3: Keep the existing city-specific cache behavior.
+            const cacheKey = `products_${productCity}_${selectedOrderType}`;
             const cachedDataString = localStorage.getItem(cacheKey);
             let cachedData = null;
 
@@ -209,7 +260,7 @@ const AdminDashboard = () => {
                 try {
                     cachedData = JSON.parse(cachedDataString);
                     if (cachedData && Array.isArray(cachedData.items)) {
-                        setProducts(cachedData.items);
+                        if (active) setProducts(cachedData.items);
                     }
                 } catch (e) {
                     console.error("Cache parse error", e);
@@ -220,7 +271,7 @@ const AdminDashboard = () => {
 
             try {
                 // Check ProductUpdates from Server
-                const updateDocRef = doc(db, "productUpdates", `${selectedCity}_${selectedOrderType}`);
+                const updateDocRef = doc(db, "productUpdates", `${productCity}_${selectedOrderType}`);
                 const updateSnap = await getDoc(updateDocRef);
 
                 const serverValues = updateSnap.exists() ? updateSnap.data() : null;
@@ -234,7 +285,7 @@ const AdminDashboard = () => {
                     const q = query(
                         productsRef,
                         where("typeId", "==", selectedOrderType),
-                        where("city", "==", selectedCity)
+                        where("city", "==", productCity)
                     );
 
                     const querySnapshot = await getDocs(q);
@@ -245,7 +296,7 @@ const AdminDashboard = () => {
 
                     items.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
 
-                    setProducts(items);
+                    if (active) setProducts(items);
 
                     localStorage.setItem(cacheKey, JSON.stringify({
                         items: items,
@@ -256,16 +307,17 @@ const AdminDashboard = () => {
             } catch (error) {
                 console.error("Error fetching admin products:", error);
             } finally {
-                setLoadingProducts(false);
+                if (active) setLoadingProducts(false);
             }
         };
 
         fetchProducts();
-    }, [selectedCity, selectedOrderType]);
+        return () => { active = false; };
+    }, [productCity, selectedOrderType]);
 
-    // Load all products in the selected city for constraint names and editing.
+    // Load product choices only while the product constraints section is open.
     useEffect(() => {
-        if (activeTab !== 'constraints') return undefined;
+        if (activeTab !== 'constraints' || constraintSection !== 'products') return undefined;
         let active = true;
         setConstraintProductsLoading(true);
         setConstraintProductsError(false);
@@ -284,7 +336,7 @@ const AdminDashboard = () => {
                 if (active) setConstraintProductsLoading(false);
             });
         return () => { active = false; };
-    }, [activeTab, selectedCity, constraintProductsReload]);
+    }, [activeTab, constraintSection, selectedCity, constraintProductsReload]);
 
     // 3. Fetch Daily Report Dates (Preserving Timestamp)
     useEffect(() => {
@@ -1566,23 +1618,6 @@ const handleSave = async (e) => {
     return (
         <DashboardLayout title={activeTab === 'home' ? "الرئيسية" : activeTab === 'products' ? "إدارة المنتجات" : activeTab === 'constraints' ? "القيود" : "التقارير"} role="admin">
 
-            {activeTab !== 'home' && (
-                <div className="admin-view-tabs" style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', borderBottom: '1px solid #e2e8f0', paddingBottom: '1rem' }}>
-                    <button className={`btn ${activeTab === 'products' ? 'btn-primary' : ''}`} onClick={() => setActiveTab('products')} style={{ background: activeTab === 'products' ? '' : 'transparent', color: activeTab === 'products' ? '#fff' : '#64748b', boxShadow: 'none', border: activeTab === 'products' ? 'none' : '1px solid #cbd5e1' }}>
-                        📦 إدارة المنتجات
-                    </button>
-                    <button className={`btn ${activeTab === 'constraints' ? 'btn-primary' : ''}`} onClick={() => setActiveTab('constraints')} style={{ background: activeTab === 'constraints' ? '' : 'transparent', color: activeTab === 'constraints' ? '#fff' : '#64748b', boxShadow: 'none', border: activeTab === 'constraints' ? 'none' : '1px solid #cbd5e1' }}>
-                        🔒 القيود
-                    </button>
-                    <button className={`btn ${activeTab === 'reports' ? 'btn-primary' : ''}`} onClick={() => setActiveTab('reports')} style={{ background: activeTab === 'reports' ? '' : 'transparent', color: activeTab === 'reports' ? '#fff' : '#64748b', boxShadow: 'none', border: activeTab === 'reports' ? 'none' : '1px solid #cbd5e1' }}>
-                        📊 التقارير
-                    </button>
-                    <button className="btn" onClick={() => setActiveTab('home')} style={{ background: '#f8fafc', color: '#64748b', boxShadow: 'none', border: '1px solid #cbd5e1', marginRight: 'auto' }}>
-                        🏠 الرئيسية
-                    </button>
-                </div>
-            )}
-
             {activeTab === 'home' ? (
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
                     <h1 style={{ fontSize: '2.5rem', color: '#0f172a', marginBottom: '3rem', fontWeight: 'bold' }}>مرحباً بك في لوحة الإدارة</h1>
@@ -1601,32 +1636,42 @@ const handleSave = async (e) => {
                 </div>
             ) : activeTab === 'constraints' ? (
                 <section aria-label="إدارة القيود">
-                    <div className="card constraints-filters">
-                        <div className="input-group">
-                            <label htmlFor="constraints-city">المدينة</label>
-                            <select id="constraints-city" className="input-field" value={selectedCity} onChange={event => setSelectedCity(event.target.value)}>
-                                <option value="ryad">الرياض (Riyadh)</option>
-                                <option value="other">خارج الرياض (Outside Riyadh)</option>
-                            </select>
+                    {constraintSection === 'products' ? (
+                        <div role="region" aria-label="قيود المنتجات">
+                            <div className="card constraints-filters">
+                                <div className="input-group">
+                                    <label htmlFor="constraints-city">المدينة</label>
+                                    <select id="constraints-city" className="input-field" value={selectedCity} onChange={event => setSelectedCity(event.target.value)}>
+                                        <option value="ryad">الرياض (Riyadh)</option>
+                                        <option value="other">خارج الرياض (Outside Riyadh)</option>
+                                    </select>
+                                </div>
+                                <div className="input-group">
+                                    <label htmlFor="constraints-type">نوع القيد</label>
+                                    <select id="constraints-type" className="input-field" value={selectedConstraintType} onChange={event => setSelectedConstraintType(event.target.value)}>
+                                        {CONSTRAINT_CATEGORIES.map(category => (
+                                            <option key={category.key} value={category.key}>{category.title}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            </div>
+                            {(constraintProductsLoading || constraintProductsCity !== selectedCity) && !constraintProductsError && <p role="status">جاري تحميل المنتجات للقيود...</p>}
+                            {constraintProductsError && (
+                                <div className="card" role="alert">
+                                    تعذر تحميل المنتجات المرتبطة بالقيود.
+                                    <button type="button" className="btn" onClick={() => setConstraintProductsReload(value => value + 1)}>إعادة المحاولة</button>
+                                </div>
+                            )}
+                            {!constraintProductsLoading && !constraintProductsError && constraintProductsCity === selectedCity && (
+                                <ColumnConstraintsManager branches={branches} items={constraintProducts} city={selectedCity} selectedType={selectedConstraintType} />
+                            )}
                         </div>
-                        <div className="input-group">
-                            <label htmlFor="constraints-type">نوع القيد</label>
-                            <select id="constraints-type" className="input-field" value={selectedConstraintType} onChange={event => setSelectedConstraintType(event.target.value)}>
-                                {CONSTRAINT_CATEGORIES.map(category => (
-                                    <option key={category.key} value={category.key}>{category.title}</option>
-                                ))}
-                            </select>
+                    ) : (
+                        <div className="card constraint-section-empty" role="region" aria-label="قيود طلبيات وجرد">
+                            <span aria-hidden="true">📋</span>
+                            <h2>قيود طلبيات وجرد</h2>
+                            <p>لم تُضف قواعد الطلبيات والجرد بعد.</p>
                         </div>
-                    </div>
-                    {(constraintProductsLoading || constraintProductsCity !== selectedCity) && !constraintProductsError && <p role="status">جاري تحميل المنتجات للقيود...</p>}
-                    {constraintProductsError && (
-                        <div className="card" role="alert">
-                            تعذر تحميل المنتجات المرتبطة بالقيود.
-                            <button type="button" className="btn" onClick={() => setConstraintProductsReload(value => value + 1)}>إعادة المحاولة</button>
-                        </div>
-                    )}
-                    {!constraintProductsLoading && !constraintProductsError && constraintProductsCity === selectedCity && (
-                        <ColumnConstraintsManager branches={branches} items={constraintProducts} city={selectedCity} selectedType={selectedConstraintType} />
                     )}
                 </section>
             ) : (
@@ -1642,19 +1687,23 @@ const handleSave = async (e) => {
                                 <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>المدينة</label>
                                 <select
                                     className="input-field"
-                                    value={selectedCity}
+                                    value={activeTab === 'reports' ? reportCity : selectedCity}
                                     onChange={(e) => {
-                                        setSelectedCity(e.target.value);
-                                        setSelectedBranch(''); // Reset branch on city change
+                                        if (activeTab === 'reports') handleReportCityChange(e.target.value);
+                                        else {
+                                            setSelectedCity(e.target.value);
+                                            setSelectedBranch('');
+                                        }
                                     }}
                                 >
                                     <option value="ryad">الرياض (Riyadh)</option>
                                     <option value="other">خارج الرياض (Outside Riyadh)</option>
+                                    {activeTab === 'reports' && <option value="all">الكل</option>}
                                 </select>
                             </div>
 
                             {/* Branch Select (Dependent on City) */}
-                            <div className="input-group" style={{ marginBottom: 0 }}>
+                            {(activeTab !== 'reports' || reportCity !== 'all') && <div className="input-group" style={{ marginBottom: 0 }}>
                                 <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>الفرع</label>
                                 <select
                                     className="input-field"
@@ -1662,8 +1711,8 @@ const handleSave = async (e) => {
                                     onChange={(e) => setSelectedBranch(e.target.value)}
                                 >
                                     <option value="">-- اختر الفرع --</option>
-                                    {branches
-                                        .filter(b => b.city === selectedCity || (!b.city && selectedCity === 'ryad')) // Default to ryad if city missing, or match exact
+                                    {(activeTab === 'reports' ? reportBranchesForCity(sortedReportBranches, reportCity) :
+                                        branches.filter(b => b.city === selectedCity || (!b.city && selectedCity === 'ryad')))
                                         .map(branch => (
                                             <option key={branch.id} value={branch.id}>
                                                 {branch.name || branch.id}
@@ -1671,7 +1720,7 @@ const handleSave = async (e) => {
                                         ))
                                     }
                                 </select>
-                            </div>
+                            </div>}
 
                             {/* Order Type Select */}
                             <div className="input-group" style={{ marginBottom: 0 }}>
@@ -1692,7 +1741,7 @@ const handleSave = async (e) => {
                             </div>
 
                             {/* Daily Report Date Select (Dynamic) */}
-                            {activeTab === 'reports' && reportDates.length > 0 && (
+                            {activeTab === 'reports' && reportCity !== 'all' && reportDates.length > 0 && (
                                 <div className="input-group" style={{ marginBottom: 0 }}>
                                     <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '600' }}>تاريخ التقرير</label>
                                     <select
@@ -1757,7 +1806,7 @@ const handleSave = async (e) => {
                                     + إضافة منتج جديد
                                 </button>
                             )}
-                            {activeTab === 'reports' && selectedCity && selectedBranch && selectedOrderType && (
+                            {activeTab === 'reports' && reportCity !== 'all' && selectedBranch && selectedOrderType && (
                                 <button
                                     className="btn"
                                     style={{
@@ -1770,7 +1819,7 @@ const handleSave = async (e) => {
                                     {showMonthlyReport ? 'إخفاء تقرير الشهر' : 'تقرير الشهر كامل'}
                                 </button>
                             )}
-                            {activeTab === 'reports' && selectedCity && selectedOrderType && (
+                            {activeTab === 'reports' && reportCity && selectedOrderType && sortedReportBranches.length > 0 && (
                                 <button
                                     className="btn"
                                     style={{
@@ -1791,12 +1840,12 @@ const handleSave = async (e) => {
                     </div>
 
                     {/* Monthly Report View */}
-                    {showMonthlyReport && selectedCity && selectedBranch && selectedOrderType && (
+                    {showMonthlyReport && reportCity !== 'all' && selectedBranch && selectedOrderType && (
                         <div style={{ marginBottom: '2rem' }}>
                             <MonthlyBranchReport
                                 branchId={selectedBranch}
-                                branches={branches.filter(b => b.city === selectedCity || (!b.city && selectedCity === 'ryad'))}
-                                city={selectedCity}
+                                branches={reportBranchesForCity(sortedReportBranches, reportCity)}
+                                city={reportCity}
                                 typeId={selectedOrderType}
                                 products={products}
                                 onClose={() => {
@@ -1811,11 +1860,12 @@ const handleSave = async (e) => {
                     )}
 
                     {/* Global Monthly Report View */}
-                    {showGlobalMonthlyReport && selectedCity && selectedOrderType && (
+                    {showGlobalMonthlyReport && reportCity && selectedOrderType && (
                         <div style={{ marginBottom: '2rem' }}>
                             <GlobalMonthlyReport
-                                branches={branches}
-                                cityName={selectedCity}
+                                key={`${reportCity}_${selectedOrderType}`}
+                                branches={sortedReportBranches}
+                                cityName={reportCity}
                                 typeId={selectedOrderType}
                                 initialMonth={new Date().toISOString().substring(0, 7)}
                                 onClose={() => setShowGlobalMonthlyReport(false)}
@@ -1825,7 +1875,9 @@ const handleSave = async (e) => {
                     )}
 
                     {/* Products Table */}
-                    <div className="card">
+                    {activeTab === 'reports' && reportCity === 'all' ? (
+                        <div className="card" role="status">اختر نوع الطلبية ثم افتح تقرير الفروع الشامل لعرض فروع الرياض وخارج الرياض.</div>
+                    ) : <div className="card">
                         {loadingProducts ? (
                             <p style={{ textAlign: 'center', padding: '2rem' }}>جاري التحميل...</p>
                         ) : !selectedOrderType ? (
@@ -2221,7 +2273,7 @@ const handleSave = async (e) => {
                                 )}
                             </div>
                         )}
-                    </div>
+                    </div>}
                 </>
             )}
 

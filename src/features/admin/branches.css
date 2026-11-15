@@ -15,6 +15,14 @@
 .branches-success, .branches-error { padding: .8rem; border-radius: .5rem; margin: 0; }
 .branches-success { background: #ecfdf5; color: #166534; }
 .branches-error { background: #fef2f2; color: #b91c1c; }
+.branches-ban-status { display: grid; gap: .4rem; min-width: 180px; }
+.branches-ban-status small { color: #475569; overflow-wrap: anywhere; }
+.branches-ban-active { color: #b91c1c; font-weight: 700; }
+.branches-ban-clear { color: #166534; font-weight: 700; }
+.branches-ban-editor { display: grid; gap: .4rem; }
+.branches-ban-editor label { display: grid; gap: .35rem; font-size: .85rem; font-weight: 600; }
+.branches-ban-buttons { display: flex; flex-wrap: wrap; gap: .35rem; }
+.branches-ban-buttons .btn { padding: .35rem .6rem; white-space: nowrap; }
 @media (max-width: 700px) {
   .branches-page { gap: 1rem; }
   .branches-form, .branches-list { padding: 1rem; }
