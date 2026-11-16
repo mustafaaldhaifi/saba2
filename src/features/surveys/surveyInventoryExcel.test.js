@@ -13,7 +13,7 @@ test('inventory export aligns shared products by ID and gives each field its own
         bread: { productName: 'خبز', actualQuantity: 5, reason: 'زيادة' },
       } },
       { branchId: 'b2', occurrenceDate: '2026-11-15', status: 'submitted', inventoryAnswers: {
-        milk: { productName: 'حليب طازج', actualQuantity: 3, reason: 'نقص' },
+        milk_jeddah: { productName: ' حليب  ', actualQuantity: 3, reason: 'نقص' },
         water: { productName: 'ماء', actualQuantity: 8, reason: '' },
       } },
       { branchId: 'b3', occurrenceDate: '2026-11-14', status: 'submitted', inventoryAnswers: {
@@ -49,4 +49,21 @@ test('inventory export aligns shared products by ID and gives each field its own
   assert.equal(actualSheet.getRow(milkRow).getCell(4).value, null);
   assert.equal(reasonSheet.getRow(milkRow).getCell(3).value, 'نقص');
   assert.equal(products.has('جبن'), false);
+});
+
+test('same-named products inside one branch retain separate values and IDs', async () => {
+  const workbook = await createSurveyInventoryWorkbook({
+    survey: { title: 'جرد الأصناف' }, date: '2026-11-15',
+    branches: [{ id: 'b1', name: 'الرياض' }],
+    responses: [{ branchId: 'b1', occurrenceDate: '2026-11-15', inventoryAnswers: {
+      first: { productName: 'حليب', difference: 2 },
+      second: { productName: ' حليب ', difference: -3 },
+    } }],
+    selectedColumnIds: ['difference'],
+  });
+  const sheet = workbook.getWorksheet('الفارق');
+  assert.equal(sheet.getRow(5).getCell(1).value, 'حليب [first]');
+  assert.equal(sheet.getRow(5).getCell(2).value, 2);
+  assert.equal(sheet.getRow(6).getCell(1).value, 'حليب [second]');
+  assert.equal(sheet.getRow(6).getCell(2).value, -3);
 });
