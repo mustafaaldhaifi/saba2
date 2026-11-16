@@ -1,0 +1,8 @@
+.daily-inventory-constraint { direction: rtl; text-align: right; max-width: 920px; }
+.daily-inventory-constraint h2 { margin-bottom: 1.25rem; }
+.daily-inventory-constraint p { color: #475569; line-height: 1.7; }
+.daily-inventory-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+.daily-inventory-fields label { display: grid; gap: .5rem; font-weight: 600; }
+.daily-inventory-error { color: #b91c1c !important; }
+.daily-inventory-success { color: #15803d !important; }
+@media (max-width: 640px) { .daily-inventory-fields { grid-template-columns: 1fr; } }

@@ -7,6 +7,7 @@ import MonthlyBranchReport from './MonthlyBranchReport';
 import GlobalMonthlyReport from './GlobalMonthlyReport';
 import ProductCorrectionModal from './ProductCorrectionModal';
 import ColumnConstraintsManager from "./ColumnConstraintForm";
+import DailyInventoryConstraint from './DailyInventoryConstraint';
 import { CONSTRAINT_CATEGORIES } from './constraintCategories';
 import { reportBranchesForCity, sortReportBranches } from './reportBranches';
 
@@ -1667,11 +1668,7 @@ const handleSave = async (e) => {
                             )}
                         </div>
                     ) : (
-                        <div className="card constraint-section-empty" role="region" aria-label="قيود طلبيات وجرد">
-                            <span aria-hidden="true">📋</span>
-                            <h2>قيود طلبيات وجرد</h2>
-                            <p>لم تُضف قواعد الطلبيات والجرد بعد.</p>
-                        </div>
+                        <DailyInventoryConstraint />
                     )}
                 </section>
             ) : (

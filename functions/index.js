@@ -4,6 +4,7 @@ const { initializeApp } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
 const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 const { createHash } = require('node:crypto');
+const { riyadhDate, shiftDate, lastOverdueDate, RIYADH_TIMEZONE } = require('./dailyInventoryDeadline');
 
 initializeApp();
 
@@ -153,8 +154,8 @@ exports.manageBranch = onCall({ region: 'asia-east1', maxInstances: 10 }, async 
 /**
  * Closes expired branch attempts and restores their unresolved bans.
  * 1. Find active attempts using the shared scheduled job.
- * 2. Recheck each attempt, branch, and source history in a transaction.
- * 3. Mark the attempt expired and append a new ban event when the branch is still open.
+ * 2. Recheck each attempt, branch, source history, and any completed daily report.
+ * 3. Mark the attempt used or restore its unresolved ban.
  */
 exports.expireBanAttempts = onSchedule({ schedule: 'every 5 minutes', region: 'asia-east1', maxInstances: 1 }, async () => {
   // STEP 1: Only currently active attempts can expire.
@@ -170,6 +171,17 @@ exports.expireBanAttempts = onSchedule({ schedule: 'every 5 minutes', region: 'a
         const branchRef = database.collection('branches').doc(attempt.id);
         const historyRef = database.collection('bansHistory').doc(attemptDoc.data().sourceBanId);
         const [branch, source] = await Promise.all([transaction.get(branchRef), transaction.get(historyRef)]);
+        // NOTE: A report committed before expiry may still be awaiting client-side attempt closure.
+        const reportDate = source.data()?.banItemId === 'daily_inventory'
+          ? source.data()?.message?.match(/بتاريخ (\d{4}-\d{2}-\d{2})/)?.[1] : null;
+        if (reportDate) {
+          const report = await transaction.get(database.collection('dailyReportsDates').doc(`${attempt.id}_5_${reportDate}`));
+          if (report.data()?.createdAt?.toMillis() <= attemptDoc.data().expiresAt.toMillis()) {
+            transaction.update(attempt.ref, { status: 'used', closedAt: FieldValue.serverTimestamp() });
+            if (branch.data()?.ban === source.data().message) transaction.update(branchRef, { ban: null });
+            return;
+          }
+        }
         transaction.update(attempt.ref, { status: 'expired', closedAt: FieldValue.serverTimestamp() });
         // STEP 3: Keep another active reason intact if it replaced this attempt.
         if (branch.exists && branch.data().status !== 'archived' && branch.data().ban == null && source.exists) {
@@ -184,6 +196,73 @@ exports.expireBanAttempts = onSchedule({ schedule: 'every 5 minutes', region: 'a
       });
     } catch (error) {
       console.error('Unable to expire ban attempt:', attempt.id, error);
+    }
+  }
+});
+
+const DAILY_INVENTORY_ITEM_ID = 'daily_inventory';
+const DAILY_INVENTORY_TYPE_ID = '5';
+
+/**
+ * Ban each active branch whose daily inventory date passed its global grace period.
+ * 1. Resolve overdue dates from the administrator's current rule in Riyadh time.
+ * 2. Read submitted report dates and existing daily-ban events in bulk.
+ * 3. Recheck each missing date in a transaction and record one ban per branch.
+ */
+exports.enforceDailyInventoryDeadline = onSchedule({ schedule: '0 0 * * *', timeZone: RIYADH_TIMEZONE, region: 'asia-east1', maxInstances: 1 }, async () => {
+  // STEP 1: Rules start with their effective report date, never older report dates.
+  const database = getFirestore();
+  const ruleRef = database.collection('settings').doc('daily_inventory_deadline');
+  const ruleSnapshot = await ruleRef.get();
+  const rule = ruleSnapshot.data();
+  if (!rule?.enabled || !Number.isInteger(rule.graceDays) || rule.graceDays < 0 || rule.graceDays > 30 ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(rule.effectiveFrom || '')) return;
+  const today = riyadhDate(new Date());
+  const dueThrough = lastOverdueDate(today, rule.graceDays);
+  if (dueThrough < rule.effectiveFrom) return;
+
+  // STEP 2: One report-date read covers every branch and every overdue date.
+  const [reports, branches, history, item] = await Promise.all([
+    database.collection('dailyReportsDates')
+      .where('date', '>=', new Date(`${rule.effectiveFrom}T00:00:00+03:00`))
+      .where('date', '<', new Date(`${shiftDate(dueThrough, 1)}T00:00:00+03:00`)).get(),
+    database.collection('branches').get(),
+    database.collection('bansHistory').where('banItemId', '==', DAILY_INVENTORY_ITEM_ID).get(),
+    database.collection('banItems').doc(DAILY_INVENTORY_ITEM_ID).get(),
+  ]);
+  if (!item.exists) await item.ref.set({ type: 'daily_inventory', title: 'طلبية الجرد اليومي' });
+  const submitted = new Set(reports.docs.filter((report) => report.data().typeId === DAILY_INVENTORY_TYPE_ID)
+    .map((report) => `${report.data().branchId}__${riyadhDate(report.data().date.toDate())}`));
+  const alreadyBanned = new Set(history.docs.map((event) => event.id));
+  const overdueDates = [];
+  for (let date = rule.effectiveFrom; date <= dueThrough; date = shiftDate(date, 1)) overdueDates.push(date);
+
+  // STEP 3: A completed report, existing ban, or active additional attempt wins over this check.
+  for (const branch of branches.docs) {
+    if (branch.data().status === 'archived') continue;
+    const date = overdueDates.find((candidate) => !submitted.has(`${branch.id}__${candidate}`) &&
+      !alreadyBanned.has(`${branch.id}__daily_inventory__${candidate}`));
+    if (!date) continue;
+    const historyRef = database.collection('bansHistory').doc(`${branch.id}__daily_inventory__${date}`);
+    const branchRef = branch.ref;
+    const attemptRef = database.collection('banAttempts').doc(branch.id);
+    const reportRef = database.collection('dailyReportsDates').doc(`${branch.id}_${DAILY_INVENTORY_TYPE_ID}_${date}`);
+    try {
+      await database.runTransaction(async (transaction) => {
+        const [currentRule, currentBranch, attempt, event, report] = await Promise.all([
+          transaction.get(ruleRef), transaction.get(branchRef), transaction.get(attemptRef),
+          transaction.get(historyRef), transaction.get(reportRef),
+        ]);
+        if (currentRule.data()?.updatedAt?.toMillis() !== rule.updatedAt?.toMillis() ||
+            currentBranch.data()?.status === 'archived' || typeof currentBranch.data()?.ban === 'string' ||
+            attempt.data()?.status === 'active' || event.exists || report.exists) return;
+        const message = `لم تُدخل طلبية الجرد اليومي بتاريخ ${date} خلال المهلة المحددة.`;
+        transaction.update(branchRef, { ban: message });
+        transaction.create(historyRef, { branchId: branch.id, banItemId: DAILY_INVENTORY_ITEM_ID,
+          message, bannedAt: FieldValue.serverTimestamp() });
+      });
+    } catch (error) {
+      console.error('Unable to enforce daily inventory deadline:', branch.id, date, error);
     }
   }
 });
