@@ -17,6 +17,7 @@ import { auth, db } from '../../config/firebase';
 import { RESPONSE_STATUS, SURVEY_STATUS } from './surveyConstants';
 import { cleanSurveyAnswers, validateSurveyAnswers } from './surveyValidation';
 import { getExpiredOccurrences, getLatestDueOccurrence, getResponseMonth, getScheduleForOccurrence, getSurveySchedule, getZonedDateTime, occurrenceDateOfResponse, scheduledDateTime } from './surveySchedule';
+import { calculateInventoryTransfer, canTransferInventoryDifference } from './inventoryTransferMath';
 
 const SURVEYS = 'surveys';
 const RESPONSES = 'surveyResponses';
@@ -423,7 +424,7 @@ export const correctSurveyResponse = async ({ response, survey, answers, userId 
 /**
  * Changes one product answer while preserving the other products and recording the revision.
  * 1. Read the current branch response in a transaction.
- * 2. Validate or remove the selected product answer.
+ * 2. Validate or remove the selected product answer and retain prior settlements.
  * 3. Save the response and its audit record atomically.
  */
 export const changeInventoryProductAnswer = async ({ responseId, productId, actualQuantity, reason, remove = false, userId }) => {
@@ -437,17 +438,20 @@ export const changeInventoryProductAnswer = async ({ responseId, productId, actu
     const previous = response.inventoryAnswers?.[productId];
     if (!previous) throw new Error('لم تعد إجابة هذا الصنف موجودة.');
 
-    // STEP 2: Keep the daily reference fixed and recalculate the difference.
+    // STEP 2: Keep the daily reference fixed and calculate only the difference not yet settled.
     const nextAnswers = { ...response.inventoryAnswers };
     if (remove) delete nextAnswers[productId];
     else {
       const actual = Number(actualQuantity);
       const expected = Number(previous.expectedQuantity);
       if (!Number.isFinite(actual) || actual < 0 || !Number.isFinite(expected)) throw new Error('أدخل كمية صحيحة.');
-      const difference = actual - expected;
+      // NOTE: The first correction must also account for surplus posted automatically on submission.
+      const settledDifference = Number(previous.settledDifference ?? previous.appliedSurplus ?? 0);
+      const difference = actual - expected - settledDifference;
       const cleanReason = difference === 0 ? '' : String(reason || '').trim();
       if (difference !== 0 && !cleanReason) throw new Error('أدخل سبب النقص أو الزيادة.');
-      nextAnswers[productId] = { ...previous, actualQuantity: actual, difference, reason: cleanReason };
+      nextAnswers[productId] = { ...previous, actualQuantity: actual, difference, reason: cleanReason,
+        ...(settledDifference !== 0 || previous.settledDifference !== undefined ? { settledDifference } : {}) };
     }
 
     // STEP 3: Store the scoped change and its audit entry together.
@@ -462,6 +466,250 @@ export const changeInventoryProductAnswer = async ({ responseId, productId, actu
     responseCache.delete(response.surveyId);
     return nextAnswers;
   });
+};
+
+/** Returns the calendar date used by daily inventory in Riyadh. */
+const inventoryDateKey = (timestamp) => new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Riyadh', year: 'numeric', month: '2-digit', day: '2-digit',
+}).format(timestamp.toDate());
+
+/**
+ * Transfers one outstanding survey difference to the branch's latest saved daily inventory.
+ * 1. Resolve the latest report and unique stock records before starting the transaction.
+ * 2. Recheck the response, latest day, and balances in the transaction.
+ * 3. Apply the outstanding adjustment, preserve the reason and reference date, and zero the difference together.
+ */
+export const transferInventoryDifference = async ({ responseId, productId, expectedDifference, userId }) => {
+  // STEP 1: Resolve document identities from the latest saved day; never use the survey's old reference day.
+  if (auth.currentUser?.email?.toLowerCase() !== 'admin@saba321.com' || !userId || userId !== auth.currentUser.uid) {
+    throw new Error('ترحيل الفروقات متاح للإدارة فقط.');
+  }
+  const responseRef = doc(db, RESPONSES, responseId);
+  const responseSnapshot = await getDoc(responseRef);
+  const response = responseSnapshot.data();
+  if (!responseSnapshot.exists() || response.status !== RESPONSE_STATUS.SUBMITTED || !response.branchId) {
+    throw new Error('إجابة الاستبيان غير متاحة للترحيل.');
+  }
+  const answer = response.inventoryAnswers?.[productId];
+  if (!answer || !canTransferInventoryDifference(answer) ||
+      Number(answer.difference) !== Number(expectedDifference) || !String(answer.reason || '').trim()) {
+    throw new Error('تغير فارق الصنف أو سببه. حدّث الإجابة وحاول مجددًا.');
+  }
+  const branchId = response.branchId;
+  const typeId = '5';
+  const dates = await getDocs(query(collection(db, 'dailyReportsDates'),
+    where('branchId', '==', branchId), where('typeId', '==', typeId)));
+  const latest = dates.docs.filter((item) => item.data().date?.toMillis)
+    .sort((left, right) => right.data().date.toMillis() - left.data().date.toMillis())[0];
+  if (!latest) throw new Error('لا يوجد يوم جرد يومي محفوظ لهذا الفرع.');
+  const targetDate = inventoryDateKey(latest.data().date);
+  const start = Timestamp.fromDate(new Date(`${targetDate}T00:00:00+03:00`));
+  const end = Timestamp.fromDate(new Date(`${targetDate}T23:59:59.999+03:00`));
+  const summaryRef = doc(db, 'product_monthly_summaries', `${branchId}_${targetDate.slice(0, 7)}_${productId}`);
+  const [reports, openings, markers, product, children, summarySnapshot] = await Promise.all([
+    getDocs(query(collection(db, 'dailyReports'), where('branchId', '==', branchId),
+      where('typeId', '==', typeId), where('date', '>=', start), where('date', '<=', end))),
+    getDocs(query(collection(db, 'openingStock'), where('branchId', '==', branchId), where('typeId', '==', typeId))),
+    getDocs(query(collection(db, 'dailyReportsUpdates'), where('branchId', '==', branchId), where('date', '==', start))),
+    getDoc(doc(db, 'products', productId)),
+    getDocs(query(collection(db, 'products'), where('parentProduct', '==', productId))),
+    getDoc(summaryRef),
+  ]);
+  // NOTE: Grouped parent/child rows recalculate through child columns; changing one row alone would lose the adjustment.
+  if (!product.exists()) throw new Error('لم يعد هذا الصنف موجودًا في قائمة المنتجات.');
+  if (product.data().parentProduct || !children.empty) throw new Error('هذا الصنف مرتبط بأصناف فرعية ويحتاج تسوية يدوية.');
+  const matchingReports = reports.docs.filter((item) => item.data().productId === productId);
+  const matchingOpenings = openings.docs.filter((item) => item.data().productId === productId);
+  const summaryDayKey = targetDate.slice(-2);
+  const summaryData = summarySnapshot.data();
+  const summaryDay = summaryData?.[`days.${summaryDayKey}`] ?? summaryData?.days?.[summaryDayKey];
+  const newestMarker = [...markers.docs].sort((left, right) =>
+    (right.data().updatedAt?.toMillis?.() ?? 0) - (left.data().updatedAt?.toMillis?.() ?? 0))[0]?.id;
+  const duplicateGroups = [
+    { collectionName: 'dailyReports', title: 'سجلات الجرد اليومي', documents: matchingReports },
+    { collectionName: 'openingStock', title: 'الأرصدة الافتتاحية', documents: matchingOpenings },
+    { collectionName: 'dailyReportsUpdates', title: 'علامات تحديث يوم الجرد', documents: markers.docs },
+  ].filter((group) => group.documents.length > 1).map((group) => ({
+    collectionName: group.collectionName, title: group.title,
+    records: group.documents.map((item) => ({
+      id: item.id,
+      closeStock: item.data().closeStock ?? null,
+      openingStockQnt: item.data().openingStockQnt ?? null,
+      add: item.data().add ?? null,
+      createdAt: item.data().createdAt?.toMillis?.() ?? null,
+      updatedAt: item.data().updatedAt?.toMillis?.() ?? null,
+      matchesSummary: group.collectionName === 'dailyReports'
+        ? !!summaryDay && Number(item.data().closeStock) === Number(summaryDay.closeStock) &&
+          Number(item.data().add || 0) === Number(summaryDay.add || 0)
+        : group.collectionName === 'openingStock'
+          ? !!summaryDay && Number(item.data().openingStockQnt) === Number(summaryDay.closeStock)
+          : item.id === newestMarker,
+    })),
+  }));
+  if (duplicateGroups.length) {
+    const duplicateError = new Error(`توجد سجلات مكررة للصنف «${answer.productName}». راجعها قبل الترحيل.`);
+    duplicateError.duplicateInventory = { productId, productName: answer.productName, branchId, targetDate, groups: duplicateGroups };
+    throw duplicateError;
+  }
+  if (!matchingReports.length) throw new Error('لا يوجد سجل جرد يومي لهذا الصنف في آخر يوم محفوظ.');
+  if (!matchingOpenings.length) throw new Error('لا يوجد رصيد افتتاحي لهذا الصنف.');
+  if (!markers.size) throw new Error('لا توجد علامة تحديث لآخر يوم جرد محفوظ.');
+  const reportRef = matchingReports[0].ref;
+  const openingRef = matchingOpenings[0].ref;
+  const markerRef = markers.docs[0].ref;
+  const latestRef = doc(db, 'latestReportUpdate', `${branchId}_${typeId}`);
+  const revisionRef = doc(collection(db, REVISIONS));
+
+  // STEP 2: A concurrent submission, edit, transfer, or newer daily report must cancel this item.
+  const inventoryAnswers = await runTransaction(db, async (transaction) => {
+    const [current, day, latestUpdate, report, opening, summary, marker] = await Promise.all([
+      transaction.get(responseRef), transaction.get(latest.ref), transaction.get(latestRef),
+      transaction.get(reportRef), transaction.get(openingRef), transaction.get(summaryRef), transaction.get(markerRef),
+    ]);
+    const currentResponse = current.data();
+    const previous = currentResponse?.inventoryAnswers?.[productId];
+    if (!current.exists() || currentResponse.status !== RESPONSE_STATUS.SUBMITTED || currentResponse.branchId !== branchId ||
+        !previous || !canTransferInventoryDifference(previous) ||
+        Number(previous.difference) !== Number(expectedDifference) ||
+        previous.reason !== answer.reason || previous.actualQuantity !== answer.actualQuantity ||
+        previous.settledDifference !== answer.settledDifference || !day.exists() ||
+        !latestUpdate.exists() || !latestUpdate.data().updatedAt ||
+        inventoryDateKey(latestUpdate.data().updatedAt) !== targetDate ||
+        !report.exists() || !opening.exists() || !summary.exists() || !marker.exists() ||
+        report.data().productId !== productId || report.data().branchId !== branchId ||
+        report.data().typeId !== typeId || !report.data().date ||
+        inventoryDateKey(report.data().date) !== targetDate) {
+      throw new Error('تغيرت بيانات الصنف أو آخر يوم جرد. حدّث الصفحة وحاول مجددًا.');
+    }
+    const oldClosing = Number(report.data().closeStock);
+    const oldOpening = Number(opening.data().openingStockQnt);
+    const oldAdd = Number(report.data().add || 0);
+    const dayKey = targetDate.slice(-2);
+    const summaryData = summary.data();
+    const literalDay = summaryData[`days.${dayKey}`];
+    const daySummary = literalDay ?? summaryData.days?.[dayKey];
+    if (!Number.isFinite(oldClosing) || !Number.isFinite(oldOpening) || !Number.isFinite(oldAdd) ||
+        !daySummary || Number(daySummary.closeStock) !== oldClosing ||
+        Number(daySummary.add || 0) !== oldAdd || oldOpening !== oldClosing) {
+      throw new Error('أرصدة الجرد وملخصه غير متطابقة لهذا الصنف؛ راجعها قبل الترحيل.');
+    }
+    const { rawDifference, pending, nextAdd, nextClosing } = calculateInventoryTransfer(previous, report.data());
+
+    // STEP 3: Keep the branch's reason beside its reference inventory date in the daily note.
+    const notePart = `(الجرد: ${String(previous.reason).trim()}، تاريخ الجرد: ${previous.referenceDate || targetDate})`;
+    const oldNote = String(report.data().note || '').trim();
+    const newNote = oldNote.split(' | ').includes(notePart) ? oldNote : oldNote ? `${oldNote} | ${notePart}` : notePart;
+    transaction.update(reportRef, {
+      add: nextAdd, closeStock: nextClosing, note: newNote, updatedAt: serverTimestamp(),
+    });
+    if (pending !== 0) {
+      transaction.update(openingRef, { openingStockQnt: nextClosing, updatedAt: serverTimestamp() });
+      const newDay = { ...daySummary, add: nextAdd, closeStock: nextClosing };
+      transaction.set(summaryRef, literalDay
+        ? { [`days.${dayKey}`]: newDay, updatedAt: serverTimestamp() }
+        : { days: { [dayKey]: newDay }, updatedAt: serverTimestamp() }, { merge: true });
+    }
+    transaction.update(markerRef, { updatedAt: serverTimestamp() });
+    const nextAnswers = { ...currentResponse.inventoryAnswers, [productId]: {
+      ...previous, difference: 0, settledDifference: rawDifference,
+      settledAt: Timestamp.now(), settledBy: userId, settledOnDate: targetDate,
+    } };
+    transaction.update(responseRef, { inventoryAnswers: nextAnswers, updatedAt: serverTimestamp() });
+    transaction.set(revisionRef, {
+      surveyId: currentResponse.surveyId, responseId, branchId, productId,
+      month: currentResponse.month || currentResponse.occurrenceDate?.slice(0, 7),
+      action: 'transfer_inventory_difference', previousAnswer: previous,
+      newAnswer: nextAnswers[productId], transferredAmount: pending, targetDate,
+      editedBy: userId, editedAt: serverTimestamp(),
+    });
+    return nextAnswers;
+  });
+  responseCache.delete(response.surveyId);
+  return { inventoryAnswers, targetDate };
+};
+
+/**
+ * Deletes one administrator-selected duplicate while retaining another scoped record and an audit copy.
+ * 1. Recheck admin access, the response, latest day, and duplicate document IDs.
+ * 2. Verify the selected and retained records in a transaction.
+ * 3. Delete only the selected record and preserve its contents in the revision history.
+ */
+export const deleteDuplicateInventoryRecord = async ({ responseId, productId, targetDate, collectionName, documentId, keeperId, userId }) => {
+  // STEP 1: A stale window or a different collection must not delete an unrelated record.
+  if (auth.currentUser?.email?.toLowerCase() !== 'admin@saba321.com' ||
+      !userId || userId !== auth.currentUser.uid) throw new Error('حذف السجلات المكررة متاح للإدارة فقط.');
+  if (!['dailyReports', 'openingStock', 'dailyReportsUpdates'].includes(collectionName) ||
+      !documentId || !keeperId || documentId === keeperId || !/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+    throw new Error('بيانات السجل المراد حذفه غير صالحة.');
+  }
+  const responseRef = doc(db, RESPONSES, responseId);
+  const responseSnapshot = await getDoc(responseRef);
+  const response = responseSnapshot.data();
+  if (!responseSnapshot.exists() || response.status !== RESPONSE_STATUS.SUBMITTED ||
+      !response.inventoryAnswers?.[productId] || !response.branchId) throw new Error('إجابة الصنف لم تعد متاحة.');
+  const branchId = response.branchId;
+  const typeId = '5';
+  const dates = await getDocs(query(collection(db, 'dailyReportsDates'),
+    where('branchId', '==', branchId), where('typeId', '==', typeId)));
+  const latest = dates.docs.filter((item) => item.data().date?.toMillis)
+    .sort((left, right) => right.data().date.toMillis() - left.data().date.toMillis())[0];
+  if (!latest || inventoryDateKey(latest.data().date) !== targetDate) {
+    throw new Error('تغير آخر يوم جرد. أعد المحاولة بعد تحديث البيانات.');
+  }
+  const start = Timestamp.fromDate(new Date(`${targetDate}T00:00:00+03:00`));
+  const end = Timestamp.fromDate(new Date(`${targetDate}T23:59:59.999+03:00`));
+  const scopedQuery = collectionName === 'openingStock'
+    ? query(collection(db, collectionName), where('branchId', '==', branchId), where('typeId', '==', typeId))
+    : collectionName === 'dailyReports'
+      ? query(collection(db, collectionName), where('branchId', '==', branchId),
+        where('typeId', '==', typeId), where('date', '>=', start), where('date', '<=', end))
+      : query(collection(db, collectionName), where('branchId', '==', branchId), where('date', '==', start));
+  const scopedSnapshot = await getDocs(scopedQuery);
+  const matching = scopedSnapshot.docs.filter((item) => collectionName === 'dailyReportsUpdates' || item.data().productId === productId);
+  if (matching.length < 2 || !matching.some((item) => item.id === documentId) ||
+      !matching.some((item) => item.id === keeperId)) throw new Error('تغيرت السجلات المكررة. أعد فتح النافذة.');
+  const selectedRef = doc(db, collectionName, documentId);
+  const keeperRef = doc(db, collectionName, keeperId);
+  const latestRef = doc(db, 'latestReportUpdate', `${branchId}_${typeId}`);
+  const updateMarkers = collectionName === 'dailyReportsUpdates' ? null : await getDocs(query(
+    collection(db, 'dailyReportsUpdates'), where('branchId', '==', branchId), where('date', '==', start)
+  ));
+  const markerRef = collectionName === 'dailyReportsUpdates' ? keeperRef : updateMarkers?.docs[0]?.ref;
+  const revisionRef = doc(collection(db, REVISIONS));
+
+  // STEP 2: Keep a surviving record, verify its scope, and guard against a newer report day.
+  await runTransaction(db, async (transaction) => {
+    const [currentResponse, day, latestUpdate, selected, keeper, marker] = await Promise.all([
+      transaction.get(responseRef), transaction.get(latest.ref), transaction.get(latestRef),
+      transaction.get(selectedRef), transaction.get(keeperRef),
+      markerRef ? transaction.get(markerRef) : Promise.resolve(null),
+    ]);
+    const sameScope = (snapshot) => snapshot.exists() && snapshot.data().branchId === branchId &&
+      (collectionName === 'dailyReportsUpdates'
+        ? !!snapshot.data().date && inventoryDateKey(snapshot.data().date) === targetDate
+        : snapshot.data().typeId === typeId && snapshot.data().productId === productId &&
+          (collectionName === 'openingStock' ||
+            (!!snapshot.data().date && inventoryDateKey(snapshot.data().date) === targetDate)));
+    if (!currentResponse.exists() || currentResponse.data().status !== RESPONSE_STATUS.SUBMITTED ||
+        currentResponse.data().branchId !== branchId ||
+        !currentResponse.data().inventoryAnswers?.[productId] || !day.exists() ||
+        !latestUpdate.exists() || !latestUpdate.data().updatedAt ||
+        inventoryDateKey(latestUpdate.data().updatedAt) !== targetDate ||
+        !sameScope(selected) || !sameScope(keeper)) {
+      throw new Error('تغيرت بيانات السجلات. أعد فتح نافذة التكرار.');
+    }
+    // STEP 3: Preserve the deleted document for review before removing it from the live collection.
+    transaction.set(revisionRef, {
+      surveyId: currentResponse.data().surveyId, responseId, branchId, productId,
+      month: currentResponse.data().month || currentResponse.data().occurrenceDate?.slice(0, 7),
+      action: 'delete_duplicate_inventory_record', collectionName,
+      documentId, retainedDocumentId: keeperId, targetDate,
+      deletedRecord: selected.data(), editedBy: userId, editedAt: serverTimestamp(),
+    });
+    transaction.delete(selectedRef);
+    if (markerRef && marker?.exists()) transaction.update(markerRef, { updatedAt: serverTimestamp() });
+  });
+  responseCache.delete(response.surveyId);
 };
 
 /**

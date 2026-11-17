@@ -34,10 +34,24 @@
 .survey-response-state.archived { color: #475569; background: #e2e8f0; }
 .survey-select { width: auto; min-width: 220px; }
 .survey-table-wrap { overflow-x: auto; }
+.survey-transfer-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .8rem; margin-top: 1rem; }
+.survey-transfer-progress { padding: .75rem 1rem; border-radius: var(--radius-md); margin-top: .75rem; color: #1e40af; background: #eff6ff; }
+.survey-transfer-progress progress, .survey-success progress { display: block; width: 100%; height: .6rem; margin-top: .5rem; }
+.survey-transfer-failed { color: #b91c1c; display: inline-block; max-width: 16rem; white-space: normal; }
+.survey-transfer-failed .survey-text-button { display: block; margin: .35rem auto 0; }
+.survey-duplicate-backdrop { position: fixed; inset: 0; z-index: 120; background: rgb(15 23 42 / .7); display: grid; place-items: center; padding: 1rem; }
+.survey-duplicate-dialog { direction: rtl; width: min(760px, 100%); max-height: 90vh; overflow: auto; background: white; border-radius: var(--radius-lg); padding: 1.5rem; box-shadow: var(--shadow-lg); }
+.survey-duplicate-group { margin-top: 1rem; border-top: 1px solid #e2e8f0; padding-top: .8rem; }
+.survey-duplicate-record { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; padding: .8rem 0; border-bottom: 1px solid #e2e8f0; }
+.survey-duplicate-record > div { display: grid; gap: .25rem; min-width: 0; overflow-wrap: anywhere; }
+.survey-duplicate-record span { color: #475569; }
+.survey-duplicate-record small { color: #166534; }
+.survey-response-details { width: min(1180px, 100%); }
 .survey-monitor-table { width: 100%; min-width: 740px; border-collapse: collapse; margin-top: 1rem; }
 .survey-monitor-table th, .survey-monitor-table td { padding: .8rem; border-bottom: 1px solid #e2e8f0; text-align: center; }
 .survey-monitor-table th { background: #f8fafc; font-size: .85rem; }
 .survey-monitor-table td:first-child, .survey-monitor-table th:first-child { text-align: right; font-weight: 700; }
+.survey-response-details .survey-monitor-table td:first-child, .survey-response-details .survey-monitor-table th:first-child { text-align: center; font-weight: 400; }
 .survey-branch-card { margin-bottom: 1.5rem; padding: 1.25rem; }
 .survey-branch-item { display: flex; width: 100%; justify-content: space-between; align-items: center; text-align: right; gap: 1rem; border: 1px solid #e2e8f0; border-radius: var(--radius-md); background: white; padding: 1rem; margin-top: .75rem; cursor: pointer; color: inherit; }
 .survey-branch-item:hover { border-color: hsl(var(--color-primary)); }
