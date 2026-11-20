@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import DashboardLayout from '../../layouts/DashboardLayout';
-import { getBranchStockVisibility, loadBranches, saveBranchStockVisibility } from './branchesService';
+import { DAILY_INVENTORY_COLUMNS, getHiddenDailyInventoryColumns, loadBranches, saveBranchStockVisibility } from './branchesService';
 import { banBranch, grantBanAttempt, initializeBranchBans, loadBanAttempts, unbanBranch } from './banService';
 import { getZonedDateTime, scheduledDateTime, SURVEY_TIMEZONE } from '../surveys/surveySchedule';
 import './branches.css';
@@ -13,7 +13,9 @@ import './branches.css';
 const BranchesManager = () => {
   const [branches, setBranches] = useState([]);
   const [selectedIds, setSelectedIds] = useState([]);
-  const [action, setAction] = useState('hide');
+  const [columnChoices, setColumnChoices] = useState({});
+  const [search, setSearch] = useState('');
+  const [cityFilter, setCityFilter] = useState('all');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
@@ -25,7 +27,12 @@ const BranchesManager = () => {
   const [editingAttemptId, setEditingAttemptId] = useState('');
   const [attemptUntil, setAttemptUntil] = useState('');
   const activeIds = branches.filter((branch) => branch.status !== 'archived').map((branch) => branch.id);
-  const allSelected = activeIds.length > 0 && activeIds.every((id) => selectedIds.includes(id));
+  const visibleBranches = branches.filter((branch) =>
+    (cityFilter === 'all' || (branch.city === 'other' ? 'other' : 'riyadh') === cityFilter) &&
+    `${branch.name || ''} ${branch.loginName || ''}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
+  const visibleActiveIds = visibleBranches.filter((branch) => branch.status !== 'archived').map((branch) => branch.id);
+  const allSelected = visibleActiveIds.length > 0 && visibleActiveIds.every((id) => selectedIds.includes(id));
+  const changedColumns = Object.entries(columnChoices).filter(([, choice]) => choice !== 'keep');
 
   const reload = async () => {
     const [items, activeAttempts] = await Promise.all([loadBranches(), loadBanAttempts()]);
@@ -55,23 +62,24 @@ const BranchesManager = () => {
 
   /**
    * Applies one stock-column action to the selected branch records.
-   * 1. Require at least one selected active branch.
-   * 2. Save the combined preference and reload the resulting list.
+   * 1. Require selected active branches and at least one changed column.
+   * 2. Save only chosen column changes and reload the resulting list.
    */
   const submit = async (event) => {
     event.preventDefault();
     // STEP 1: Avoid an accidental update when no branch is checked.
-    if (!selectedIds.length) { setError('حدد فرعًا واحدًا على الأقل.'); return; }
+    if (!selectedIds.length || !changedColumns.length) { setError('حدد الفروع وعمودًا واحدًا على الأقل لتغييره.'); return; }
 
     setSaving(true);
     setError('');
     setMessage('');
     try {
-      // STEP 2: Update both columns together for the selected branches only.
-      const count = await saveBranchStockVisibility(branches, selectedIds, action === 'hide');
+      // STEP 2: Preserve every column left unchanged for each branch.
+      const count = await saveBranchStockVisibility(branches, selectedIds, Object.fromEntries(changedColumns.map(([id, choice]) => [id, choice === 'hide'])));
       await reload();
       setSelectedIds([]);
-      setMessage(`تم ${action === 'hide' ? 'إخفاء' : 'إظهار'} العمودين في ${count} فرع.`);
+      setColumnChoices({});
+      setMessage(`تم حفظ إعدادات ${changedColumns.length} عمود في ${count} فرع.`);
     } catch (cause) {
       await reload().catch(() => {});
       setSelectedIds([]);
@@ -130,29 +138,39 @@ const BranchesManager = () => {
 
   return <DashboardLayout title="إدارة الفروع" role="admin">
     <div className="branches-page" dir="rtl">
-      <header><h1>الفروع</h1><p>إدارة حالة الحظر وإعداد عرض عمودَي الموجودة والمتبقي في الجرد اليومي لكل فرع.</p></header>
+      <header><h1>الفروع</h1><p>اختر الفروع، ثم اضبط ظهور أعمدة الجرد لكل فرع مع إدارة حالة الحظر.</p></header>
       {message && <p className="branches-success" role="status">{message}</p>}
       {error && <p className="branches-error" role="alert">{error}</p>}
       <form className="card branches-form" onSubmit={submit}>
-        <h2>إخفاء أو إظهار أعمدة الجرد</h2>
-        <p className="branches-hint">حدد الفروع من القائمة، ثم اختر الإجراء. عمودا الموجودة والمتبقي يتغيران معًا.</p>
-        <label className="branches-toggle"><input type="checkbox" checked={allSelected} disabled={saving || loading || activeIds.length === 0} onChange={(event) => setSelectedIds(event.target.checked ? activeIds : [])} /><span>تحديد جميع الفروع النشطة ({activeIds.length})</span></label>
-        <label className="branches-bulk-action">الإجراء<select className="input-field" value={action} onChange={(event) => setAction(event.target.value)}><option value="hide">إخفاء العمودين</option><option value="show">إظهار العمودين</option></select></label>
-        <div className="branches-actions"><button className="btn btn-primary" disabled={saving || loading || selectedIds.length === 0}>{saving ? 'جارٍ الحفظ...' : `تطبيق على ${selectedIds.length} فرع`}</button></div>
+        <div className="branches-setup-heading"><div><span className="branches-step">01 / إعداد الجرد</span><h2>لوحة ظهور الأعمدة</h2><p className="branches-hint">اختر حالة كل عمود. «دون تغيير» يحافظ على إعداد الفرع الحالي.</p></div><strong>{selectedIds.length} فرع محدد</strong></div>
+        <div className="branches-column-grid">{DAILY_INVENTORY_COLUMNS.map((column) => <div className="branches-column-card" key={column.id}>
+          <div><strong>{column.label}</strong><small>ظاهر في {branches.filter((branch) => branch.status !== 'archived' && !getHiddenDailyInventoryColumns(branch).includes(column.id)).length} من {activeIds.length} فرع</small></div>
+          <select className="input-field" aria-label={`ظهور عمود ${column.label}`} value={columnChoices[column.id] || 'keep'} onChange={(event) => setColumnChoices((current) => ({ ...current, [column.id]: event.target.value }))}>
+            <option value="keep">دون تغيير</option><option value="show">إظهار</option><option value="hide">إخفاء</option>
+          </select>
+        </div>)}</div>
+        <div className="branches-preview" aria-live="polite"><strong>معاينة التغيير</strong><span>{selectedIds.length ? `على ${selectedIds.length} فرع` : 'اختر الفروع من القائمة أدناه'}</span>
+          <span>إخفاء: {changedColumns.filter(([, choice]) => choice === 'hide').map(([id]) => DAILY_INVENTORY_COLUMNS.find((column) => column.id === id)?.label).join('، ') || 'لا شيء'}</span>
+          <span>إظهار: {changedColumns.filter(([, choice]) => choice === 'show').map(([id]) => DAILY_INVENTORY_COLUMNS.find((column) => column.id === id)?.label).join('، ') || 'لا شيء'}</span>
+        </div>
+        <div className="branches-actions"><span>سيُعدَّل {changedColumns.length} عمود في {selectedIds.length} فرع</span><button className="btn btn-primary" disabled={saving || loading || !selectedIds.length || !changedColumns.length}>{saving ? 'جارٍ الحفظ...' : 'حفظ إعدادات الأعمدة'}</button></div>
       </form>
       <section className="card branches-list">
-        <h2>الفروع الحالية</h2>
+        <div className="branches-list-heading"><div><span className="branches-step">02 / اختيار الفروع</span><h2>الفروع الحالية</h2></div><div className="branches-filters"><input className="input-field" type="search" placeholder="ابحث عن فرع" aria-label="ابحث عن فرع" value={search} onChange={(event) => setSearch(event.target.value)} /><select className="input-field" aria-label="تصفية المدينة" value={cityFilter} onChange={(event) => setCityFilter(event.target.value)}><option value="all">كل المدن</option><option value="riyadh">الرياض</option><option value="other">خارج الرياض</option></select></div></div>
+        <label className="branches-toggle"><input type="checkbox" checked={allSelected} disabled={saving || loading || !visibleActiveIds.length} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...new Set([...current, ...visibleActiveIds])] : current.filter((id) => !visibleActiveIds.includes(id)))} /><span>تحديد الفروع المعروضة ({visibleActiveIds.length})</span></label>
         {loading ? <p>جارٍ تحميل الفروع...</p> : branches.length === 0 ? <p>لا توجد فروع.</p> :
           <div className="branches-table-wrap"><table>
-            <thead><tr><th>تحديد</th><th>الفرع</th><th>رمز الدخول</th><th>المدينة</th><th>أعمدة المخزون</th><th>الحالة</th><th>حالة الحظر</th></tr></thead>
-            <tbody>{branches.map((branch) => {
+            <thead><tr><th>تحديد</th><th>الفرع</th><th>رمز الدخول</th><th>المدينة</th><th>أعمدة الجرد</th><th>الحالة</th><th>حالة الحظر</th></tr></thead>
+            <tbody>{visibleBranches.map((branch) => {
               const attemptExpired = attempts[branch.id]?.status === 'active' && attempts[branch.id].expiresAt?.toDate?.() <= new Date();
               return <tr key={branch.id}>
               <td data-label="تحديد"><input type="checkbox" aria-label={`تحديد فرع ${branch.name || branch.id}`} checked={selectedIds.includes(branch.id)} disabled={saving || branch.status === 'archived'} onChange={() => toggleBranch(branch.id)} /></td>
               <td data-label="الفرع">{branch.name || branch.id}</td>
               <td data-label="رمز الدخول" dir="ltr">{branch.loginName || branch.name}</td>
               <td data-label="المدينة">{branch.city === 'other' ? 'خارج الرياض' : 'الرياض'}</td>
-              <td data-label="أعمدة المخزون">{getBranchStockVisibility(branch) ? 'مخفية' : 'ظاهرة'}</td>
+              <td data-label="أعمدة الجرد"><span>{getHiddenDailyInventoryColumns(branch).length
+                ? `المخفية: ${getHiddenDailyInventoryColumns(branch).map((id) => DAILY_INVENTORY_COLUMNS.find((column) => column.id === id)?.label).join('، ')}`
+                : 'كل الأعمدة ظاهرة'}</span>{branch.status !== 'archived' && <button type="button" className="branches-row-action" onClick={() => { setSelectedIds([branch.id]); document.querySelector('.branches-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>ضبط هذا الفرع</button>}</td>
               <td data-label="الحالة">{branch.status === 'archived' ? 'مؤرشف' : 'نشط'}</td>
               <td data-label="حالة الحظر">
                 <div className="branches-ban-status">

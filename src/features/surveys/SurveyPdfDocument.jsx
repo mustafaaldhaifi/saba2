@@ -1,11 +1,23 @@
 import { QUESTION_TYPES, RESPONSE_STATUS, formatMonth } from './surveyConstants';
-import { getResponseMonth, getZonedDateTime, listDueOccurrencesInMonth, occurrenceDateOfResponse } from './surveySchedule';
+import { getZonedDateTime } from './surveySchedule';
 import { formatExpiryDate, isExpiredDate, normalizeExpiryDate } from './surveyDates';
+import { getInventoryPdfFields, getSurveyPdfResponse } from './surveyPdfSelection';
 
-const SurveyPdfAnswers = ({ response, survey, questionId }) => {
+/**
+ * Renders one response using the chosen inventory columns or survey questions.
+ * 1. Limit inventory columns to the selected export fields.
+ * 2. Otherwise show the questions available in this response snapshot.
+ */
+const SurveyPdfAnswers = ({ response, survey, questionId, inventoryFieldIds }) => {
+  // STEP 1: Inventory PDF uses exactly the same field definitions as Excel.
   if ((response.surveySnapshot?.kind || survey.kind) === 'inventory') {
-    return <table className="survey-pdf-workers"><thead><tr><th>الصنف</th><th>رصيد الجرد</th><th>الموجود الفعلي</th><th>الفارق</th><th>الفائض المضاف</th><th>السبب</th><th>تاريخ الجرد</th></tr></thead><tbody>{Object.entries(response.inventoryAnswers || {}).map(([id, answer]) => <tr key={id}><td>{answer.productName}</td><td>{answer.expectedQuantity}</td><td>{answer.actualQuantity ?? '—'}</td><td className={answer.difference < 0 ? 'survey-pdf-alert' : undefined}>{answer.difference ?? '—'}</td><td>{answer.appliedSurplus ?? 0}</td><td>{answer.reason || '—'}</td><td>{answer.referenceDate || '—'}</td></tr>)}</tbody></table>;
+    const fields = getInventoryPdfFields(inventoryFieldIds);
+    return <table className="survey-pdf-workers"><thead><tr><th>الصنف</th>{fields.map((field) => <th key={field.id}>{field.label}</th>)}</tr></thead><tbody>{Object.entries(response.inventoryAnswers || {}).map(([id, answer]) => <tr key={id}><td>{answer.productName}</td>{fields.map((field) => {
+      const value = field.value(answer);
+      return <td key={field.id} className={field.id === 'difference' && Number(value) < 0 ? 'survey-pdf-alert' : undefined}>{value === null || value === '' ? '—' : value}</td>;
+    })}</tr>)}</tbody></table>;
   }
+  // STEP 2: Keep the existing document, note, and health-certificate rendering.
   const questions = response.surveySnapshot?.questions || survey.questions || [];
   const visibleQuestions = questionId ? questions.filter((question) => question.id === questionId) : questions;
   const today = getZonedDateTime().date;
@@ -24,24 +36,28 @@ const SurveyPdfAnswers = ({ response, survey, questionId }) => {
   })}</div>;
 };
 
-const SurveyPdfDocument = ({ survey, month, branches, responses, question }) => <div className="survey-pdf" dir="rtl">
-  {branches.map((branch, index) => {
-    const branchResponses = responses.filter((response) => response.surveyId === survey.id && response.branchId === branch.id && getResponseMonth(response) === month);
-    const dates = [...new Set([...listDueOccurrencesInMonth(survey, month), ...branchResponses.map(occurrenceDateOfResponse)])].sort();
-    const completed = branchResponses.filter((response) => response.status === RESPONSE_STATUS.SUBMITTED).length;
+/**
+ * Builds a PDF for one selected survey date across the selected branches.
+ * 1. Skip rendering until a date is selected.
+ * 2. Match one response per branch for that date and render only its answers.
+ */
+const SurveyPdfDocument = ({ survey, month, date, branches, responses, question, inventoryFieldIds = [] }) => {
+  // STEP 1: An empty date must not silently expand to the whole month.
+  if (!date) return null;
+  // STEP 2: Every branch gets just the chosen occurrence, including a clear missing status.
+  return <div className="survey-pdf" dir="rtl">{branches.map((branch, index) => {
+    const response = getSurveyPdfResponse({ surveyId: survey.id, branchId: branch.id, date, responses });
+    const completed = response?.status === RESPONSE_STATUS.SUBMITTED ? 1 : 0;
     return <section className="survey-pdf-branch" key={branch.id}>
       <header className="survey-pdf-header"><div><span className="survey-pdf-kicker">نظام سبأ · تقرير الاستبيانات</span><h1>{question ? question.label : survey.title}</h1><p>{survey.title} · {formatMonth(month)} · {branch.name || branch.id}</p></div><div className="survey-pdf-number">{index + 1} / {branches.length}</div></header>
-      <div className="survey-pdf-status"><strong>المواعيد</strong><span>{completed} مكتمل من {dates.length}</span></div>
-      {dates.length ? dates.map((date) => {
-        const response = branchResponses.find((item) => occurrenceDateOfResponse(item) === date);
-        return <section className="survey-pdf-occurrence" key={date}>
-          <div className="survey-pdf-occurrence-heading"><strong>موعد {date}</strong><span>{response?.status === RESPONSE_STATUS.SUBMITTED ? 'تم الإرسال' : response?.status === RESPONSE_STATUS.DRAFT ? 'مسودة' : 'لم يرسل'}</span></div>
-          {response && <SurveyPdfAnswers response={response} survey={survey} questionId={question?.id} />}
-        </section>;
-      }) : <p className="survey-pdf-empty">لا توجد مواعيد مستحقة لهذا الفرع في الشهر المحدد.</p>}
+      <div className="survey-pdf-status"><strong>الموعد {date}</strong><span>{completed} مكتمل من 1</span></div>
+      <section className="survey-pdf-occurrence">
+        <div className="survey-pdf-occurrence-heading"><strong>موعد {date}</strong><span>{response?.status === RESPONSE_STATUS.SUBMITTED ? 'تم الإرسال' : response?.status === RESPONSE_STATUS.DRAFT ? 'مسودة' : 'لم يرسل'}</span></div>
+        {response && <SurveyPdfAnswers response={response} survey={survey} questionId={question?.id} inventoryFieldIds={inventoryFieldIds} />}
+      </section>
       <footer>تاريخ إنشاء التقرير: {new Date().toLocaleString('ar-SA')} · {branch.name || branch.id}</footer>
     </section>;
-  })}
-</div>;
+  })}</div>;
+};
 
 export default SurveyPdfDocument;

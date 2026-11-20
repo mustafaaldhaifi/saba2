@@ -209,12 +209,20 @@ const SurveysDashboard = () => {
     }
   };
 
-  const exportPdf = async () => {
-    if (!selectedSurvey || !selectedExportMonth || exportBranchIds.length === 0 || !pdfRef.current) return;
+  /**
+   * Exports the selected inventory date and fields in one PDF.
+   * 1. Require the chosen occurrence, branches, and inventory columns.
+   * 2. Render the prepared single-date PDF and save it with the date in its name.
+   */
+  const exportInventoryPdf = async () => {
+    // STEP 1: Do not export the month when the user selected one occurrence.
+    if (!selectedSurvey || selectedSurvey.kind !== 'inventory' || !selectedExportDate ||
+        !exportBranches.length || !exportInventoryColumnIds.length || !pdfRef.current) return;
     try {
       setExporting(true);
       const { default: html2pdf } = await import('html2pdf.js');
-      const filename = `استبيان_${selectedSurvey.title}_${selectedExportMonth}.pdf`.replace(/[\\/:*?"<>|]/g, '_');
+      // STEP 2: The hidden PDF document already contains only the selected date and fields.
+      const filename = `جرد_${selectedSurvey.title}_${selectedExportDate}.pdf`.replace(/[\\/:*?"<>|]/g, '_');
       await html2pdf().set({
         margin: [8, 8, 8, 8], filename,
         image: { type: 'jpeg', quality: 0.97 },
@@ -222,7 +230,7 @@ const SurveysDashboard = () => {
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
         pagebreak: { mode: ['css'] },
       }).from(pdfRef.current).save();
-      setMessage(`تم تصدير ${exportBranchIds.length} فرع في ملف PDF واحد.`);
+      setMessage(`تم تصدير ${exportBranches.length} فرع في ملف PDF لموعد ${selectedExportDate}.`);
     } catch (error) { setMessage('تعذر إنشاء ملف PDF.'); console.error(error); }
     finally { setExporting(false); }
   };
@@ -287,6 +295,7 @@ const SurveysDashboard = () => {
   };
 
   const exportBranches = branches.filter((branch) => exportBranchIds.includes(branch.id));
+  const selectedFieldCount = selectedSurvey?.kind === 'inventory' ? exportInventoryColumnIds.length : selectedExportQuestions.length;
   const getCellDates = (branchId, month) => [...new Set([
     ...listDueOccurrencesInMonth(selectedSurvey, month),
     ...responses.filter((response) => response.branchId === branchId && getResponseMonth(response) === month).map(occurrenceDateOfResponse).filter(Boolean),
@@ -330,7 +339,7 @@ const SurveysDashboard = () => {
 
     {selectedSurvey && <section className="survey-monitor card survey-export-panel">
       <h2>تصدير بيانات الاستبيان</h2>
-      <p className="survey-helper">{selectedSurvey.kind === 'inventory' ? 'اختر التاريخ والفروع وحقول جرد الأصناف. يظهر كل حقل في ورقة Excel مستقلة، بالأصناف صفوفًا والفروع أعمدة.' : 'اختر التاريخ والفروع والحقول. في PDF يُنشأ ملف لكل حقل، وفي Excel ملف واحد بتبويب لكل حقل.'}</p>
+      <p className="survey-helper">{selectedSurvey.kind === 'inventory' ? 'اختر موعد الاستبيان والفروع وحقول الجرد ونوع الملف. تعرض ملفات PDF الحقول المختارة فقط، ويظهر كل حقل في ورقة Excel مستقلة.' : 'اختر موعد الاستبيان والفروع والحقول ونوع الملف. في PDF يُنشأ ملف لكل حقل، وفي Excel ملف واحد بتبويب لكل حقل.'}</p>
       <div className="survey-form-grid">
         <label>الشهر<select className="input-field" value={selectedExportMonth} disabled={!months.length} onChange={(event) => { setExportMonth(event.target.value); setExportQuestionIds([]); setExportDate(''); }}>
           {!months.length && <option value="">لا توجد أشهر للعرض</option>}
@@ -340,10 +349,10 @@ const SurveysDashboard = () => {
           <option value="" disabled>لا توجد مواعيد في هذا الشهر</option>
           {exportDates.map((date) => <option key={date} value={date}>{date}</option>)}
         </select></label>
-        {selectedSurvey.kind !== 'inventory' && <label>نوع ملف الحقول<select className="input-field" value={exportFormat} onChange={(event) => setExportFormat(event.target.value)}>
+        <label>نوع الملف<select className="input-field" value={exportFormat} onChange={(event) => setExportFormat(event.target.value)}>
           <option value="pdf">PDF</option>
           <option value="excel">Excel (.xlsx)</option>
-        </select></label>}
+        </select></label>
       </div>
       {selectedSurvey.kind !== 'inventory' && <fieldset className="survey-export-fields"><legend>حقول التقرير</legend>
         <div className="survey-export-fields-header"><span>{selectedExportQuestions.length} من {exportQuestions.length} حقل محدد</span>
@@ -356,8 +365,8 @@ const SurveysDashboard = () => {
           {question.label}{question.previous ? ' (حقل سابق)' : ''}
         </label>)}</div>
       </fieldset>}
-      {selectedSurvey.kind === 'inventory' && <fieldset className="survey-export-fields"><legend>حقول جرد الأصناف في Excel</legend>
-        <div className="survey-export-fields-header"><span>{exportInventoryColumnIds.length} من {INVENTORY_EXPORT_FIELDS.length} حقول مختارة · كل حقل في ورقة مستقلة</span>
+      {selectedSurvey.kind === 'inventory' && <fieldset className="survey-export-fields"><legend>حقول جرد الأصناف</legend>
+        <div className="survey-export-fields-header"><span>{exportInventoryColumnIds.length} من {INVENTORY_EXPORT_FIELDS.length} حقول مختارة · {exportFormat === 'excel' ? 'كل حقل في ورقة مستقلة' : 'تظهر الحقول المختارة في PDF'}</span>
           <button type="button" className="survey-text-button" onClick={() => setExportInventoryColumnIds((current) => current.length === INVENTORY_EXPORT_FIELDS.length ? [] : INVENTORY_EXPORT_FIELDS.map((field) => field.id))}>
             {exportInventoryColumnIds.length === INVENTORY_EXPORT_FIELDS.length ? 'إلغاء اختيار الكل' : 'اختيار الكل'}
           </button>
@@ -377,14 +386,16 @@ const SurveysDashboard = () => {
         {branch.name || branch.id}
       </label>)}</div>
       <div className="survey-actions survey-export-actions">
-        {selectedSurvey.kind === 'inventory' ? <button type="button" className="btn btn-primary" disabled={!selectedExportDate || !exportBranches.length || !exportInventoryColumnIds.length || exporting || responsesLoading} onClick={exportInventoryExcel}>{exporting ? 'جاري تجهيز التصدير...' : `تصدير Excel (${exportInventoryColumnIds.length} ${exportInventoryColumnIds.length === 1 ? 'ورقة' : 'أوراق'})`}</button> : <button type="button" className="btn btn-primary" disabled={!selectedExportQuestions.length || !selectedExportDate || !exportBranches.length || exporting || responsesLoading} onClick={exportSelectedFields}>
-          {exporting ? 'جاري تجهيز التصدير...' : exportFormat === 'excel' ? `تصدير ملف Excel (${selectedExportQuestions.length} ${selectedExportQuestions.length === 1 ? 'تبويب' : 'تبويبات'})` : `تصدير ${selectedExportQuestions.length} ${selectedExportQuestions.length === 1 ? 'ملف PDF' : 'ملفات PDF'}`}
-        </button>}
-        <button type="button" className="btn survey-secondary" disabled={!selectedExportMonth || !exportBranches.length || exporting || responsesLoading} onClick={exportPdf}>تصدير التقرير الشامل PDF</button>
+        <button type="button" className="btn btn-primary" disabled={!selectedFieldCount || !selectedExportDate || !exportBranches.length || exporting || responsesLoading}
+          onClick={selectedSurvey.kind === 'inventory' ? exportFormat === 'pdf' ? exportInventoryPdf : exportInventoryExcel : exportSelectedFields}>
+          {exporting ? 'جاري تجهيز التصدير...' : selectedSurvey.kind === 'inventory'
+            ? exportFormat === 'pdf' ? 'تصدير PDF' : `تصدير Excel (${selectedFieldCount} ${selectedFieldCount === 1 ? 'ورقة' : 'أوراق'})`
+            : exportFormat === 'excel' ? `تصدير ملف Excel (${selectedFieldCount} ${selectedFieldCount === 1 ? 'تبويب' : 'تبويبات'})` : `تصدير ${selectedFieldCount} ${selectedFieldCount === 1 ? 'ملف PDF' : 'ملفات PDF'}`}
+        </button>
         {selectedExportMonth && selectedExportMonth !== getCurrentMonth() && responses.some((response) => getResponseMonth(response) === selectedExportMonth) && <button type="button" className="btn survey-danger" onClick={removeMonth}>حذف إجابات هذا الشهر نهائياً</button>}
       </div>
     </section>}
-    {selectedSurvey && selectedExportMonth && exportBranches.length > 0 && <div className="survey-pdf-host" aria-hidden="true"><div ref={pdfRef}><SurveyPdfDocument survey={selectedSurvey} month={selectedExportMonth} branches={exportBranches} responses={responses} /></div>{exportFormat === 'pdf' && selectedExportQuestions.map((question) => <div key={question.id} ref={(node) => { if (node) fieldPdfRefs.current.set(question.id, node); else fieldPdfRefs.current.delete(question.id); }}><SurveyFieldPdfDocument survey={selectedSurvey} question={question} date={selectedExportDate} branches={exportBranches} responses={responses} /></div>)}</div>}
+    {selectedSurvey && selectedExportMonth && selectedExportDate && exportBranches.length > 0 && exportFormat === 'pdf' && <div className="survey-pdf-host" aria-hidden="true">{selectedSurvey.kind === 'inventory' ? <div ref={pdfRef}><SurveyPdfDocument survey={selectedSurvey} month={selectedExportMonth} date={selectedExportDate} branches={exportBranches} responses={responses} inventoryFieldIds={exportInventoryColumnIds} /></div> : selectedExportQuestions.map((question) => <div key={question.id} ref={(node) => { if (node) fieldPdfRefs.current.set(question.id, node); else fieldPdfRefs.current.delete(question.id); }}><SurveyFieldPdfDocument survey={selectedSurvey} question={question} date={selectedExportDate} branches={exportBranches} responses={responses} /></div>)}</div>}
     {selectedResponse && selectedSurvey && (selectedSurvey.kind === 'inventory' ? <InventoryResponseModal key={selectedResponse.response.id} response={selectedResponse.response} branch={selectedResponse.branch} onClose={() => setSelectedResponse(null)} onUpdated={(updated, message) => { setResponses((current) => current.map((item) => item.id === updated.id ? updated : item)); setSelectedResponse((current) => ({ ...current, response: updated })); if (message) setMessage(message); }} /> : <SurveyResponseDetailsModal key={selectedResponse.response.id} response={selectedResponse.response} branch={selectedResponse.branch} survey={selectedSurvey} onClose={() => setSelectedResponse(null)} onUpdated={(updated) => { setResponses((current) => current.map((item) => item.id === updated.id ? updated : item)); setSelectedResponse({ ...selectedResponse, response: updated }); setMessage('تم تصحيح إجابة الفرع وحفظ سجل التعديل.'); }} />)}
   </DashboardLayout>;
 };
