@@ -39,6 +39,7 @@ const SurveysDashboard = () => {
   const [exportQuestionIds, setExportQuestionIds] = useState([]);
   const [exportInventoryColumnIds, setExportInventoryColumnIds] = useState(() => INVENTORY_EXPORT_FIELDS.map((field) => field.id));
   const [exportFormat, setExportFormat] = useState('pdf');
+  const [exportPageType, setExportPageType] = useState('fields');
   const [exportDate, setExportDate] = useState('');
   const [exporting, setExporting] = useState(false);
   const [resettingResponseId, setResettingResponseId] = useState('');
@@ -236,7 +237,7 @@ const SurveysDashboard = () => {
   };
 
   /**
-   * Export the selected inventory date, branches, and answer fields as separate sheets.
+   * Export the selected inventory date with worksheets grouped by field or branch.
    * 1. Reject an incomplete selection and build one workbook from loaded answers.
    * 2. Save the workbook or report an export error.
    */
@@ -247,9 +248,9 @@ const SurveysDashboard = () => {
       setExporting(true);
       const workbook = await createSurveyInventoryWorkbook({
         survey: selectedSurvey, date: selectedExportDate, branches: exportBranches, responses,
-        selectedColumnIds: exportInventoryColumnIds,
+        selectedColumnIds: exportInventoryColumnIds, pageType: exportPageType,
       });
-      // STEP 2: Save one Excel file containing a worksheet for every chosen field.
+      // STEP 2: Save one Excel file containing the selected worksheet arrangement.
       const buffer = await workbook.xlsx.writeBuffer();
       const filename = `جرد_${selectedSurvey.title}_${selectedExportDate}.xlsx`.replace(/[\\/:*?"<>|]/g, '_').slice(0, 120);
       saveAs(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), filename);
@@ -339,7 +340,7 @@ const SurveysDashboard = () => {
 
     {selectedSurvey && <section className="survey-monitor card survey-export-panel">
       <h2>تصدير بيانات الاستبيان</h2>
-      <p className="survey-helper">{selectedSurvey.kind === 'inventory' ? 'اختر موعد الاستبيان والفروع وحقول الجرد ونوع الملف. تعرض ملفات PDF الحقول المختارة فقط، ويظهر كل حقل في ورقة Excel مستقلة.' : 'اختر موعد الاستبيان والفروع والحقول ونوع الملف. في PDF يُنشأ ملف لكل حقل، وفي Excel ملف واحد بتبويب لكل حقل.'}</p>
+      <p className="survey-helper">{selectedSurvey.kind === 'inventory' ? 'اختر موعد الاستبيان والفروع وحقول الجرد ونوع الملف. تعرض ملفات PDF الحقول المختارة فقط، ويمكن ترتيب أوراق Excel حسب الحقول أو الفروع.' : 'اختر موعد الاستبيان والفروع والحقول ونوع الملف. في PDF يُنشأ ملف لكل حقل، وفي Excel ملف واحد بتبويب لكل حقل.'}</p>
       <div className="survey-form-grid">
         <label>الشهر<select className="input-field" value={selectedExportMonth} disabled={!months.length} onChange={(event) => { setExportMonth(event.target.value); setExportQuestionIds([]); setExportDate(''); }}>
           {!months.length && <option value="">لا توجد أشهر للعرض</option>}
@@ -353,6 +354,10 @@ const SurveysDashboard = () => {
           <option value="pdf">PDF</option>
           <option value="excel">Excel (.xlsx)</option>
         </select></label>
+        {selectedSurvey.kind === 'inventory' && exportFormat === 'excel' && <label>نوع الصفحات<select className="input-field" value={exportPageType} onChange={(event) => setExportPageType(event.target.value)}>
+          <option value="fields">حقول</option>
+          <option value="branches">فروع</option>
+        </select></label>}
       </div>
       {selectedSurvey.kind !== 'inventory' && <fieldset className="survey-export-fields"><legend>حقول التقرير</legend>
         <div className="survey-export-fields-header"><span>{selectedExportQuestions.length} من {exportQuestions.length} حقل محدد</span>
@@ -366,7 +371,7 @@ const SurveysDashboard = () => {
         </label>)}</div>
       </fieldset>}
       {selectedSurvey.kind === 'inventory' && <fieldset className="survey-export-fields"><legend>حقول جرد الأصناف</legend>
-        <div className="survey-export-fields-header"><span>{exportInventoryColumnIds.length} من {INVENTORY_EXPORT_FIELDS.length} حقول مختارة · {exportFormat === 'excel' ? 'كل حقل في ورقة مستقلة' : 'تظهر الحقول المختارة في PDF'}</span>
+        <div className="survey-export-fields-header"><span>{exportInventoryColumnIds.length} من {INVENTORY_EXPORT_FIELDS.length} حقول مختارة · {exportFormat === 'excel' ? exportPageType === 'branches' ? 'كل فرع في ورقة مستقلة والحقول المختارة داخلها' : 'كل حقل في ورقة مستقلة' : 'تظهر الحقول المختارة في PDF'}</span>
           <button type="button" className="survey-text-button" onClick={() => setExportInventoryColumnIds((current) => current.length === INVENTORY_EXPORT_FIELDS.length ? [] : INVENTORY_EXPORT_FIELDS.map((field) => field.id))}>
             {exportInventoryColumnIds.length === INVENTORY_EXPORT_FIELDS.length ? 'إلغاء اختيار الكل' : 'اختيار الكل'}
           </button>
@@ -389,7 +394,7 @@ const SurveysDashboard = () => {
         <button type="button" className="btn btn-primary" disabled={!selectedFieldCount || !selectedExportDate || !exportBranches.length || exporting || responsesLoading}
           onClick={selectedSurvey.kind === 'inventory' ? exportFormat === 'pdf' ? exportInventoryPdf : exportInventoryExcel : exportSelectedFields}>
           {exporting ? 'جاري تجهيز التصدير...' : selectedSurvey.kind === 'inventory'
-            ? exportFormat === 'pdf' ? 'تصدير PDF' : `تصدير Excel (${selectedFieldCount} ${selectedFieldCount === 1 ? 'ورقة' : 'أوراق'})`
+            ? exportFormat === 'pdf' ? 'تصدير PDF' : `تصدير Excel (${exportPageType === 'branches' ? exportBranches.length : selectedFieldCount} ${(exportPageType === 'branches' ? exportBranches.length : selectedFieldCount) === 1 ? 'ورقة' : 'أوراق'})`
             : exportFormat === 'excel' ? `تصدير ملف Excel (${selectedFieldCount} ${selectedFieldCount === 1 ? 'تبويب' : 'تبويبات'})` : `تصدير ${selectedFieldCount} ${selectedFieldCount === 1 ? 'ملف PDF' : 'ملفات PDF'}`}
         </button>
         {selectedExportMonth && selectedExportMonth !== getCurrentMonth() && responses.some((response) => getResponseMonth(response) === selectedExportMonth) && <button type="button" className="btn survey-danger" onClick={removeMonth}>حذف إجابات هذا الشهر نهائياً</button>}

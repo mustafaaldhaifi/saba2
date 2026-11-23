@@ -12,13 +12,13 @@ const productNameKey = (name) => String(name || '').normalize('NFKC')
   .trim().replace(/\s+/g, ' ').toLocaleLowerCase('ar');
 
 /**
- * Create one product-by-branch worksheet for every selected inventory field.
+ * Create inventory worksheets grouped by selected field or branch.
  * 1. Match the chosen date's responses and find names repeated inside one branch.
  * 2. Align products across branches by normalized name, preserving local name collisions.
- * 3. Add a separate sheet per field with product rows and branch columns.
+ * 3. Add a sheet per branch with selected fields, or keep a sheet per field with branch columns.
  * 4. Preserve missing-response status and format each sheet for right-to-left reading.
  */
-export const createSurveyInventoryWorkbook = async ({ survey, date, branches, responses, selectedColumnIds = INVENTORY_EXPORT_FIELDS.map((field) => field.id) }) => {
+export const createSurveyInventoryWorkbook = async ({ survey, date, branches, responses, selectedColumnIds = INVENTORY_EXPORT_FIELDS.map((field) => field.id), pageType = 'fields' }) => {
   // STEP 1: Product document IDs can differ by city, so detect ambiguous local names first.
   const selectedIds = new Set(selectedColumnIds);
   const fields = INVENTORY_EXPORT_FIELDS.filter((field) => selectedIds.has(field.id));
@@ -60,9 +60,47 @@ export const createSurveyInventoryWorkbook = async ({ survey, date, branches, re
   }
   const productRows = [...products.values()].sort((left, right) => left.name.localeCompare(right.name, 'ar'));
 
-  // STEP 3: The product column is shared; each selected branch has one value column.
+  // STEP 3: Group worksheets by branch or by field without changing the selected answers.
   const { default: ExcelJS } = await import('exceljs');
   const workbook = new ExcelJS.Workbook();
+  if (pageType === 'branches') {
+    const usedSheetNames = new Set();
+    for (const branch of branches) {
+      // NOTE: Excel worksheet names have a 31-character limit and must be unique.
+      const baseName = String(branch.name || branch.id).replace(/[\\/*?:[\]]/g, ' ').replace(/^'+|'+$/g, '').trim().slice(0, 31) || 'فرع';
+      let sheetName = baseName;
+      let suffix = 2;
+      while (usedSheetNames.has(sheetName.toLocaleLowerCase())) {
+        const postfix = ` (${suffix++})`;
+        sheetName = `${baseName.slice(0, 31 - postfix.length)}${postfix}`;
+      }
+      usedSheetNames.add(sheetName.toLocaleLowerCase());
+      const sheet = workbook.addWorksheet(sheetName, { views: [{ rightToLeft: true, state: 'frozen', xSplit: 1, ySplit: 4 }] });
+      sheet.mergeCells(1, 1, 1, fields.length + 1);
+      sheet.getCell(1, 1).value = `${survey.title} · ${branch.name || branch.id} · ${date}`;
+      sheet.getCell(1, 1).font = { bold: true, size: 16, color: { argb: 'FF163B67' } };
+      const header = sheet.getRow(3);
+      ['الصنف', ...fields.map((field) => field.label)].forEach((label, index) => {
+        const cell = header.getCell(index + 1);
+        cell.value = label;
+        cell.font = { bold: true, color: { argb: 'FF163B67' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F1FA' } };
+        cell.alignment = { horizontal: 'right', vertical: 'middle', wrapText: true };
+      });
+      // STEP 4: Show the branch status even when it has no response for this date.
+      const response = responseByBranch.get(branch.id);
+      const status = response?.status === 'submitted' ? 'تم الإرسال' : response?.status === 'draft' ? 'مسودة' : response ? 'توجد إجابة' : 'لا توجد إجابة';
+      sheet.addRow(['حالة الإجابة', status]);
+      for (const product of productRows.filter((item) => item.answersByBranch.has(branch.id))) {
+        const answer = product.answersByBranch.get(branch.id);
+        sheet.addRow([product.name, ...fields.map((field) => field.value(answer))]);
+      }
+      sheet.getColumn(1).width = 30;
+      fields.forEach((field, index) => { sheet.getColumn(index + 2).width = field.id === 'reason' ? 36 : 22; });
+      sheet.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3, column: fields.length + 1 } };
+    }
+    return workbook;
+  }
   for (const field of fields) {
     const sheet = workbook.addWorksheet(field.label, { views: [{ rightToLeft: true, state: 'frozen', xSplit: 1, ySplit: 4 }] });
     sheet.mergeCells(1, 1, 1, branches.length + 1);

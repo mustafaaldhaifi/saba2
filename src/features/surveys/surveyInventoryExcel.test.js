@@ -67,3 +67,33 @@ test('same-named products inside one branch retain separate values and IDs', asy
   assert.equal(sheet.getRow(6).getCell(1).value, 'حليب [second]');
   assert.equal(sheet.getRow(6).getCell(2).value, -3);
 });
+
+test('branch pages contain only that branch products and the selected fields', async () => {
+  const workbook = await createSurveyInventoryWorkbook({
+    survey: { title: 'جرد الأصناف' }, date: '2026-11-22', pageType: 'branches',
+    branches: [{ id: 'b1', name: 'الرياض' }, { id: 'b2', name: 'جدة' }, { id: 'b3', name: 'المدينة' }],
+    responses: [
+      { branchId: 'b1', occurrenceDate: '2026-11-22', status: 'submitted', inventoryAnswers: {
+        milk: { productName: 'حليب', actualQuantity: 2, reason: 'نقص' },
+      } },
+      { branchId: 'b2', occurrenceDate: '2026-11-22', status: 'draft', inventoryAnswers: {
+        bread: { productName: 'خبز', actualQuantity: 4, reason: '' },
+      } },
+    ],
+    selectedColumnIds: ['reason', 'actualQuantity'],
+  });
+  assert.deepEqual(workbook.worksheets.map((sheet) => sheet.name), ['الرياض', 'جدة', 'المدينة']);
+  const riyadh = workbook.getWorksheet('الرياض');
+  assert.deepEqual([1, 2, 3].map((column) => riyadh.getRow(3).getCell(column).value), ['الصنف', 'الموجود الفعلي', 'السبب']);
+  assert.equal(riyadh.getRow(4).getCell(2).value, 'تم الإرسال');
+  assert.deepEqual([1, 2, 3].map((column) => riyadh.getRow(5).getCell(column).value), ['حليب', 2, 'نقص']);
+  assert.equal(riyadh.rowCount, 5);
+  assert.equal(workbook.getWorksheet('جدة').getRow(5).getCell(1).value, 'خبز');
+  assert.equal(workbook.getWorksheet('المدينة').getRow(4).getCell(2).value, 'لا توجد إجابة');
+  assert.equal(workbook.getWorksheet('المدينة').rowCount, 4);
+  const buffer = await workbook.xlsx.writeBuffer();
+  const { default: ExcelJS } = await import('exceljs');
+  const reopened = new ExcelJS.Workbook();
+  await reopened.xlsx.load(buffer);
+  assert.equal(reopened.getWorksheet('الرياض').getRow(5).getCell(2).value, 2);
+});
